@@ -7,3 +7,4 @@ authors = ["WaDelma <delma@wa>"]
 daggy = "=0.4.0"
 glium = "=0.13.5"
 piston3d-cam = "=0.2.0"
+vecmath = "=0.2.0"
