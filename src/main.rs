@@ -18,13 +18,16 @@ use glium::buffer::Buffer;
 use glium::buffer::BufferType::*;
 use glium::buffer::BufferMode::*;
 
-use vecmath::{vec3_dot, vec3_scale, vec3_add, vec3_sub, vec3_normalized};
+use vecmath::*;
 
 use cam::{model_view_projection, Camera, CameraPerspective};
 
 use daggy::{Dag, NodeIndex};
 
-use process::*;
+use State::*;
+use process::Process;
+
+const TAU: f32 = 2. * ::std::f32::consts::PI;
 
 #[derive(Copy, Clone)]
 pub struct Vertex {
@@ -46,6 +49,14 @@ impl Node {
             position: position,
         }
     }
+
+    fn max_in(&self) -> u32 {
+        self.process.borrow().max_in()
+    }
+
+    fn max_out(&self) -> u32 {
+        self.process.borrow().max_out()
+    }
 }
 
 enum State {
@@ -55,15 +66,17 @@ enum State {
 
 fn main() {
     let mut mouse_pos = [0.; 2];
-	let mut dag = Dag::<Node, u32, u32>::new();
-    let n1 = dag.add_node(Node::new(Constant::new([1.0, 1.0, 1.0, 1.0]), [0., 0.]));
-    let n2 = dag.add_node(Node::new(Constant::new([1.0, 1.0, 1.0, 1.0]), [1., -1.]));
-    let e1 = dag.add_edge(n1, n2, 1u32).unwrap();
-    let n3 = dag.add_node(Node::new(Constant::new([1.0, 1.0, 1.0, 1.0]), [-1., -1.]));
-    let e2 = dag.add_edge(n1, n3, 2u32).unwrap();
-    let n4 = dag.add_node(Node::new(Constant::new([1.0, 1.0, 1.0, 1.0]), [0., -2.]));
-    let e3 = dag.add_edge(n2, n4, 1u32).unwrap();
-    let e4 = dag.add_edge(n3, n4, 1u32).unwrap();
+    let mut dag = Dag::<Node, (u32, u32), u32>::new();
+    let n1 = dag.add_node(Node::new(process::Constant::new([1.0, 1.0, 1.0, 1.0]), [-2., -2.]));
+    let n2 = dag.add_node(Node::new(process::Constant::new([1.0, 1.0, 1.0, 1.0]), [2., -2.]));
+    let n3 = dag.add_node(Node::new(process::Blend::new(), [2., 0.]));
+    let _ = dag.add_edge(n1, n3, (1, 1)).unwrap();
+    let _ = dag.add_edge(n2, n3, (1, 2)).unwrap();
+    let n4 = dag.add_node(Node::new(process::Blend::new(), [-2., 0.]));
+    let _ = dag.add_edge(n1, n4, (1, 1)).unwrap();
+    let n5 = dag.add_node(Node::new(process::Blend::new(), [0., 2.]));
+    let _ = dag.add_edge(n3, n5, (1, 2)).unwrap();
+    let _ = dag.add_edge(n4, n5, (1, 1)).unwrap();
     let mut selected = None;
     let mut state = None;
     let mut camera = Camera::new([0., 0., 5.]);
@@ -111,14 +124,13 @@ fn main() {
     let mut running = true;
     while running {
         for event in display.poll_events() {
-            use State::*;
             use glium::glutin::Event::*;
             use glium::glutin::ElementState::*;
             use glium::glutin::MouseButton::*;
             match event {
                 Closed => running = false,
                 MouseInput(Pressed, Right) => {
-                    dag.add_node(Node::new(Constant::new([1.0, 1.0, 1.0, 1.0]), mouse_pos));
+                    dag.add_node(Node::new(process::Constant::new([1.0, 1.0, 1.0, 1.0]), mouse_pos));
                 },
                 MouseInput(Pressed, Middle) => {
                     state = Some(AddingEdge);
@@ -128,7 +140,7 @@ fn main() {
                     if let Some(AddingEdge) = state {
                         if let Some(source) = selected {
                             if let Some(target) = find_selected(&dag, mouse_pos) {
-                                let _ = dag.add_edge(NodeIndex::new(source), NodeIndex::new(target), 1);
+                                let _ = dag.update_edge(NodeIndex::new(source), NodeIndex::new(target), (1, 1));
                             }
                         }
                         state = None;
@@ -200,15 +212,28 @@ fn main() {
                   .unwrap();
         }
         let mut lines = Vec::with_capacity(dag.edge_count());
-        for (source, target) in dag.raw_edges().iter().map(|e| (e.source(), e.target())) {
+        if let Some(AddingEdge) = state {
+            if let Some(source) = selected {
+                let src = dag.node_weight(NodeIndex::new(source)).unwrap();
+                let src = [src.position[0], -src.position[1]];
+                let trg = [mouse_pos[0], -mouse_pos[1]];
+                add_arrow(&mut lines, src, trg, 0.25, 0.10 * TAU);
+            }
+        }
+        for edge in dag.raw_edges() {
+            let (s, t) = edge.weight;
+            let source = edge.source();
+            let target = edge.target();
+
             let src = dag.node_weight(source).unwrap();
+            let src_dis = -0.5 + (s as f32 / (src.max_out() + 1) as f32);
+            let src = [src.position[0] + src_dis, -(src.position[1] + 0.5)];
+
             let trg = dag.node_weight(target).unwrap();
-            lines.push(Vertex {
-                position: [src.position[0], -src.position[1]],
-            });
-            lines.push(Vertex {
-                position: [trg.position[0], -trg.position[1]],
-            });
+            let trg_dis = -0.5 + (t as f32 / (trg.max_in() + 1) as f32);
+            let trg = [trg.position[0] + trg_dis, -(trg.position[1] - 0.5)];
+
+            add_arrow(&mut lines, src, trg, 0.25, 0.10 * TAU);
         }
         let vertices = glium::VertexBuffer::new(&display, &lines).unwrap();
         let indices = (0..lines.len() as u32).collect::<Vec<_>>();
@@ -231,7 +256,38 @@ fn main() {
     }
 }
 
-fn find_selected(dag: &Dag<Node, u32>, mouse_pos: [f32; 2]) -> Option<usize> {
+fn add_arrow(lines: &mut Vec<Vertex>, src: [f32; 2], trg: [f32; 2], len: f32, theta: f32) {
+    lines.push(Vertex {
+        position: src,
+    });
+    lines.push(Vertex {
+        position: trg,
+    });
+    let len = [len, len];
+    let vec = vec2_normalized_sub(src, trg);
+    let cs = theta.cos();
+    let sn = theta.sin();
+    let arrow = [vec[0] * cs - vec[1] * sn, vec[0] * sn + vec[1] * cs];
+    lines.push(Vertex {
+        position: trg,
+    });
+    lines.push(Vertex {
+        position: vec2_add(trg, vec2_mul(arrow, len)),
+    });
+
+    let vec = vec2_normalized_sub(src, trg);
+    let cs = (-theta).cos();
+    let sn = (-theta).sin();
+    let arrow = [vec[0] * cs - vec[1] * sn, vec[0] * sn + vec[1] * cs];
+    lines.push(Vertex {
+        position: trg,
+    });
+    lines.push(Vertex {
+        position: vec2_add(trg, vec2_mul(arrow, len)),
+    });
+}
+
+fn find_selected(dag: &Dag<Node, (u32, u32)>, mouse_pos: [f32; 2]) -> Option<usize> {
     dag.raw_nodes()
         .iter()
         .enumerate()
@@ -299,7 +355,8 @@ mod process {
     use std::cell::RefCell;
 
     pub trait Process {
-
+        fn max_in(&self) -> u32;
+        fn max_out(&self) -> u32;
     }
 
     pub struct Constant {
@@ -315,6 +372,21 @@ mod process {
     }
 
     impl Process for Constant {
-
+        fn max_in(&self) -> u32 {0}
+        fn max_out(&self) -> u32 {1}
     }
+
+    pub struct Blend;
+
+    impl Blend {
+        pub fn new() -> Rc<RefCell<Process>> {
+            Rc::new(RefCell::new(Blend))
+        }
+    }
+
+    impl Process for Blend {
+        fn max_in(&self) -> u32 {2}
+        fn max_out(&self) -> u32 {1}
+    }
+
 }
