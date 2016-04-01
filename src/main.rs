@@ -8,25 +8,23 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 use glium::glutin::WindowBuilder;
-use glium::uniforms::{MagnifySamplerFilter, MinifySamplerFilter};
 use glium::{DisplayBuild, Blend, Program, Surface};
 use glium::index::{IndexBuffer, PrimitiveType};
 use glium::draw_parameters::{DrawParameters};
 use glium::draw_parameters::LinearBlendingFactor::*;
 use glium::draw_parameters::BlendingFunction::*;
-use glium::buffer::Buffer;
-use glium::buffer::BufferType::*;
-use glium::buffer::BufferMode::*;
 
 use vecmath::*;
 
 use cam::{model_view_projection, Camera, CameraPerspective};
 
-use daggy::{Dag, Walker, NodeIndex};
+use daggy::{Walker, NodeIndex};
 
 use State::*;
 use process::Process;
+use dag::PortNumbered;
 
+mod dag;
 mod process;
 
 const TAU: f32 = 2. * ::std::f32::consts::PI;
@@ -69,24 +67,24 @@ enum State {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Selection {
-    Node(usize),
-    Input(usize, u32),
-    Output(usize, u32),
+    Node(NodeIndex),
+    Input(NodeIndex, u32),
+    Output(NodeIndex, u32),
 }
 
 fn main() {
     let mut mouse_pos = [0.; 2];
-    let mut dag = Dag::<Node, (u32, u32), u32>::new();
+    let mut dag = PortNumbered::<Node, u32>::new();
     let n1 = dag.add_node(Node::new(process::Constant::new([1.0, 1.0, 1.0, 1.0]), [-2., -2.]));
     let n2 = dag.add_node(Node::new(process::Constant::new([1.0, 1.0, 1.0, 1.0]), [2., -2.]));
     let n3 = dag.add_node(Node::new(process::Blend::new(), [2., 0.]));
-    let _ = dag.add_edge(n1, n3, (1, 1)).unwrap();
-    let _ = dag.add_edge(n2, n3, (1, 2)).unwrap();
+    let _ = dag.add_edge(n1, 1, n3, 1).unwrap();
+    let _ = dag.add_edge(n2, 1, n3, 2).unwrap();
     let n4 = dag.add_node(Node::new(process::Blend::new(), [-2., 0.]));
-    let _ = dag.add_edge(n1, n4, (1, 1)).unwrap();
+    let _ = dag.add_edge(n1, 1, n4, 1).unwrap();
     let n5 = dag.add_node(Node::new(process::Blend::new(), [0., 2.]));
-    let _ = dag.add_edge(n3, n5, (1, 2)).unwrap();
-    let _ = dag.add_edge(n4, n5, (1, 1)).unwrap();
+    let _ = dag.add_edge(n3, 1, n5, 2).unwrap();
+    let _ = dag.add_edge(n4, 1, n5, 1).unwrap();
     let mut selected = None;
     let mut state = None;
     let mut camera = Camera::new([0., 0., -5.]);
@@ -144,35 +142,27 @@ fn main() {
             use glium::glutin::MouseButton::*;
             match event {
                 Closed => running = false,
-                MouseInput(Pressed, Right) => {
+                MouseInput(Pressed, Middle) => {
                     dag.add_node(Node::new(process::Constant::new([1.0, 1.0, 1.0, 1.0]), mouse_pos));
                 },
-                MouseInput(Pressed, Middle) => {
+                MouseInput(Pressed, Right) => {
                     state = Some(AddingEdge);
                     match find_selected(&dag, mouse_pos, thingy_size) {
                         s @ Some(Selection::Output(..)) => {
                             selected = s;
                         },
                         Some(Selection::Input(n, i)) => {
-                            if let Some(e) = dag.parents(NodeIndex::new(n)).find_edge(&dag, |dag, e, _| {
-                                dag.edge_weight(e).unwrap().1 == i
-                            }) {
-                                selected = Some(Selection::Output(dag.edge_endpoints(e).unwrap().0.index(), dag.edge_weight(e).unwrap().0));
-                                dag.remove_edge(e);
-                            }
+                            let (s, i) = dag.remove_edge_to_port(n, i).unwrap();
+                            selected = Some(Selection::Output(s, i));
                         },
                         _ => {}
                     }
                 },
-                MouseInput(Released, Middle) => {
+                MouseInput(Released, Right) => {
                     if let Some(AddingEdge) = state {
                         if let Some(Selection::Output(source, i)) = selected {
                             if let Some(Selection::Input(target, o)) = find_selected(&dag, mouse_pos, thingy_size) {
-                                if let None = dag.parents(NodeIndex::new(target)).find_edge(&dag, |dag, e, _| {
-                                    dag.edge_weight(e).unwrap().1 == o
-                                }) {
-                                    let _ = dag.update_edge(NodeIndex::new(source), NodeIndex::new(target), (i, o));
-                                }
+                                let _ = dag.add_edge(source, i, target, o);
                             }
                         }
                         state = None;
@@ -196,7 +186,7 @@ fn main() {
                     mouse_pos = line_intersects_plane(&camera, &perspective, rel_x, rel_y);
                     if let Some(Dragging) = state {
                         if let Some(Selection::Node(o)) = selected {
-                            dag.node_weight_mut(NodeIndex::new(o)).unwrap().position = mouse_pos;
+                            dag.node_weight_mut(o).unwrap().position = mouse_pos;
                         }
                     }
                 }
@@ -288,16 +278,13 @@ fn main() {
         let mut lines = Vec::with_capacity(dag.edge_count());
         if let Some(AddingEdge) = state {
             if let Some(Selection::Output(source, s)) = selected {
-                let src = dag.node_weight(NodeIndex::new(source)).unwrap();
+                let src = dag.node_weight(source).unwrap();
                 let src = output_pos(src, s, thingy_size);
                 let trg = [mouse_pos[0], -mouse_pos[1]];
                 add_arrow(&mut lines, src, trg, 0.10, 0.10 * TAU);
             }
         }
-        for edge in dag.raw_edges() {
-            let (s, t) = edge.weight;
-            let source = edge.source();
-            let target = edge.target();
+        for (source, s, target, t) in dag.edges() {
             let src = dag.node_weight(source).unwrap();
             let trg = dag.node_weight(target).unwrap();
             let src = output_pos(src, s, thingy_size);
@@ -367,11 +354,12 @@ fn add_arrow(lines: &mut Vec<Vertex>, src: [f32; 2], trg: [f32; 2], len: f32, th
     });
 }
 
-fn find_selected(dag: &Dag<Node, (u32, u32)>, mouse_pos: [f32; 2], size: f32) -> Option<Selection> {
+fn find_selected(dag: &PortNumbered<Node>, mouse_pos: [f32; 2], size: f32) -> Option<Selection> {
     dag.raw_nodes()
         .iter()
         .enumerate()
         .filter_map(|(i, n)| {
+            let i = NodeIndex::new(i);
             let pos = n.weight.position;
             if pos[0] - 0.5 < mouse_pos[0] && mouse_pos[0] < pos[0] + 0.5 {
                 if pos[1] - 0.5 < mouse_pos[1] && mouse_pos[1] < pos[1] + 0.5 {
