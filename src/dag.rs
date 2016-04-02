@@ -21,6 +21,14 @@ impl<N, Ix: IndexType> PortNumbered<N, Ix> {
         Edges(self.dag.raw_edges(), 0)
     }
 
+    pub fn parents(&self, node: NodeIndex<Ix>) -> Parents<N, Ix> {
+        Parents(&self.dag, self.dag.parents(node))
+    }
+
+    pub fn children(&self, node: NodeIndex<Ix>) -> Children<N, Ix> {
+        Children(&self.dag, self.dag.children(node))
+    }
+
     pub fn add_edge(&mut self, src: NodeIndex<Ix>, src_port: u32, trg: NodeIndex<Ix>, trg_port: u32) -> Result<EdgeIndex<Ix>, WouldBreak> {
         if let None = self.dag.parents(trg).find_edge(&self.dag, |dag, e, _| dag.edge_weight(e).unwrap().target == trg_port) {
             self.dag.update_edge(src, trg, Edge{source: src_port, target: trg_port}).map_err(Into::into)
@@ -38,11 +46,22 @@ impl<N, Ix: IndexType> PortNumbered<N, Ix> {
             None
         }
     }
+
+    pub fn remove_outgoing_edges(&mut self, node: NodeIndex<Ix>) {
+        let mut walker = self.dag.children(node);
+        while let Some(e) = walker.next_edge(&self.dag) {
+            self.dag.remove_edge(e);
+        }
+    }
 }
 
 impl<N, Ix: IndexType> PortNumbered<N, Ix> {
     pub fn add_node(&mut self, weight: N) -> NodeIndex<Ix> {
         self.dag.add_node(weight)
+    }
+
+    pub fn remove_node(&mut self, node: NodeIndex<Ix>) -> Option<N> {
+        self.dag.remove_node(node)
     }
 
     pub fn node_weight(&self, node: NodeIndex<Ix>) -> Option<&N> {
@@ -83,6 +102,34 @@ impl<'a, Ix: IndexType> Iterator for Edges<'a, Ix> {
             let e = &self.0[self.1];
             self.1 += 1;
             Some((e.source(), e.weight.source, e.target(), e.weight.target))
+        } else {
+            None
+        }
+    }
+}
+
+pub struct Parents<'a, N: 'a, Ix: IndexType>(&'a Dag<N, Edge, Ix>, ::daggy::Parents<N, Edge, Ix>);
+
+impl<'a, N: 'a, Ix: IndexType> Iterator for Parents<'a, N, Ix> {
+    type Item = (NodeIndex<Ix>, u32, u32);
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((edge, node)) = self.1.next(self.0) {
+            let edge = self.0.edge_weight(edge).unwrap();
+            Some((node, edge.source, edge.target))
+        } else {
+            None
+        }
+    }
+}
+
+pub struct Children<'a, N: 'a, Ix: IndexType>(&'a Dag<N, Edge, Ix>, ::daggy::Children<N, Edge, Ix>);
+
+impl<'a, N: 'a, Ix: IndexType> Iterator for Children<'a, N, Ix> {
+    type Item = (u32, NodeIndex<Ix>, u32);
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((edge, node)) = self.1.next(self.0) {
+            let edge = self.0.edge_weight(edge).unwrap();
+            Some((edge.source, node, edge.target))
         } else {
             None
         }
