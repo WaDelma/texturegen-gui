@@ -27,7 +27,8 @@ use daggy::{Walker, NodeIndex};
 
 use State::*;
 use process::Process;
-use process::combiners::BlendType;
+use process::inputs;
+use process::combiners::{self, BlendType};
 use dag::PortNumbered;
 use shader::{Context, Shader};
 
@@ -85,16 +86,16 @@ fn main() {
     let display = WindowBuilder::new().build_glium().unwrap();
     let mut mouse_pos = [0.; 2];
     let mut dag = PortNumbered::<Node, u32>::new();
-    let n1 = dag.add_node(Node::new(process::Constant::new([1., 0., 0., 1.]), [-2., -2.]));
-    let n2 = dag.add_node(Node::new(process::Constant::new([0., 1., 0., 1.]), [0., -2.]));
-    let n3 = dag.add_node(Node::new(process::Constant::new([0., 0., 1., 1.]), [2., -2.]));
-    let n4 = dag.add_node(Node::new(process::Blend::new(BlendType::Hard, BlendType::Screen), [2., 0.]));
+    let n1 = dag.add_node(Node::new(inputs::Constant::new([1., 0., 0., 1.]), [-2., -2.]));
+    let n2 = dag.add_node(Node::new(inputs::Constant::new([0., 1., 0., 1.]), [0., -2.]));
+    let n3 = dag.add_node(Node::new(inputs::Constant::new([0., 0., 1., 1.]), [2., -2.]));
+    let n4 = dag.add_node(Node::new(combiners::Blend::new(BlendType::Hard, BlendType::Screen), [2., 0.]));
     let _ = dag.update_edge(n1, 0, n4, 0).unwrap();
     let _ = dag.update_edge(n3, 0, n4, 1).unwrap();
-    let n5 = dag.add_node(Node::new(process::Blend::new(BlendType::Soft, BlendType::Normal), [-2., 0.]));
+    let n5 = dag.add_node(Node::new(combiners::Blend::new(BlendType::Soft, BlendType::Normal), [-2., 0.]));
     let _ = dag.update_edge(n1, 0, n5, 0).unwrap();
     let _ = dag.update_edge(n2, 0, n5, 1).unwrap();
-    let n6 = dag.add_node(Node::new(process::Blend::new(BlendType::Screen, BlendType::Normal), [0., 2.]));
+    let n6 = dag.add_node(Node::new(combiners::Blend::new(BlendType::Screen, BlendType::Normal), [0., 2.]));
     let _ = dag.update_edge(n4, 0, n6, 1).unwrap();
     let _ = dag.update_edge(n5, 0, n6, 0).unwrap();
     update_dag(&display, &dag, n1);
@@ -143,11 +144,11 @@ fn main() {
             match event {
                 Closed => running = false,
                 KeyboardInput(Pressed, _, Some(Key::Key1)) => {
-                    let n = dag.add_node(Node::new(process::Constant::new([1., 1., 1., 1.]), mouse_pos));
+                    let n = dag.add_node(Node::new(inputs::Constant::new([1., 1., 1., 1.]), mouse_pos));
                     update_dag(&display, &dag, n);
                 },
                 KeyboardInput(Pressed, _, Some(Key::Key2)) => {
-                    let n = dag.add_node(Node::new(process::Blend::new(BlendType::Multiply, BlendType::Normal), mouse_pos));
+                    let n = dag.add_node(Node::new(combiners::Blend::new(BlendType::Multiply, BlendType::Normal), mouse_pos));
                     update_dag(&display, &dag, n);
                 },
                 MouseInput(Pressed, Mouse::Middle) => {
@@ -362,7 +363,7 @@ fn update_node<F: Facade>(facade: &F, dag: &PortNumbered<Node>, node: NodeIndex)
     result.add_vertex("gl_Position = matrix * vec4(position, 0, 1);\n");
     result.add_fragment("vec4 one = vec4(1, 1, 1, 1);\n");
     recurse(&mut result, dag, node, &mut HashSet::new());
-    result.add_fragment(format!("color = out_{}_0", node.index()));//clamp(out_{}_0, 0, 1);\n", node.index()));
+    result.add_fragment(format!("color = out_{}_0;\n", node.index()));//clamp(out_{}_0, 0, 1);\n", node.index()));
     *dag.node_weight(node).unwrap().program.borrow_mut() = Some(result.build(facade));
 }
 

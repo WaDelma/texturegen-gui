@@ -3,8 +3,8 @@ use std::cell::RefCell;
 
 use shader::Context;
 
-mod inputs;
-mod combiners;
+pub mod inputs;
+pub mod combiners;
 
 pub trait Process {
     fn max_in(&self) -> u32;
