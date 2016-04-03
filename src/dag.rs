@@ -30,10 +30,14 @@ impl<N, Ix: IndexType> PortNumbered<N, Ix> {
     }
 
     pub fn update_edge(&mut self, src: NodeIndex<Ix>, src_port: u32, trg: NodeIndex<Ix>, trg_port: u32) -> Result<EdgeIndex<Ix>, WouldBreak> {
-        if let Some(e) = self.dag.parents(trg).find_edge(&self.dag, |dag, e, _| dag.edge_weight(e).unwrap().target == trg_port) {
-            self.dag.remove_edge(e);
+        let replaced = self.dag.parents(trg).find_edge(&self.dag, |dag, e, _| dag.edge_weight(e).unwrap().target == trg_port);
+        let result = self.dag.update_edge(src, trg, Edge{source: src_port, target: trg_port}).map_err(Into::into);
+        if let Ok(_) = result {
+            if let Some(e) = replaced {
+                self.dag.remove_edge(e);
+            }
         }
-        self.dag.update_edge(src, trg, Edge{source: src_port, target: trg_port}).map_err(Into::into)
+        result
     }
 
     pub fn remove_edge_to_port(&mut self, node: NodeIndex<Ix>, port: u32) -> Option<(NodeIndex<Ix>, u32)> {

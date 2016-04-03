@@ -13,6 +13,20 @@ impl Blend {
 }
 
 impl Process for Blend {
+    fn modify(&mut self, key: String, value: String) {
+        match &*key {
+            "blend" => {
+                self.0 = value.into();
+            },
+            "alpha" => {
+                self.1 = value.into();
+            },
+            k => panic!("Unknown option: {}", k),
+        }
+    }
+    fn options(&self) -> Vec<String> {
+        vec!["blend".into(), "alpha".into()]
+    }
     fn max_in(&self) -> u32 {2}
     fn max_out(&self) -> u32 {1}
     fn shader(&self, ctx: &mut Context) -> String {
@@ -47,6 +61,27 @@ pub enum BlendType {
     Soft,
     // Dodge,
     // Burn,
+}
+
+impl From<String> for BlendType {
+    fn from(input: String) -> BlendType {
+        use self::BlendType::*;
+        match &*input {
+            "normal" => Normal,
+            "multiply" => Multiply,
+            "divide" => Divide,
+            "add" => Add,
+            "substract" => Substract,
+            "difference" => Difference,
+            "darken" => Darken,
+            "lighten" => Lighten,
+            "screen" => Screen,
+            "overlay" => Overlay,
+            "hard" => Hard,
+            "soft" => Soft,
+            i => panic!("Unknown blending type: {}", i),
+        }
+    }
 }
 
 impl BlendType {

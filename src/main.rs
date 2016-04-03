@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
+use glium::VertexBuffer;
 use glium::backend::Facade;
 use glium::glutin::WindowBuilder;
 use glium::{DisplayBuild, Blend, Program, Surface};
@@ -43,6 +44,10 @@ pub struct Vertex {
     pub position: [f32; 2],
 }
 
+fn vert(x: f32, y: f32) -> Vertex {
+    Vertex {position: [x, y]}
+}
+
 implement_vertex!(Vertex, position);
 
 struct Node {
@@ -73,6 +78,7 @@ impl Node {
 enum State {
     Dragging,
     AddingEdge,
+    Writing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,24 +109,22 @@ fn main() {
     update_dag(&display, &dag, n3);
     let mut selected = None;
     let mut state = None;
+    let mut text = String::new();
     let mut camera = Camera::new([0., 0., -5.]);
-    let perspective = CameraPerspective {
-        fov: 90f32,
-        near_clip: 0.1,
-        far_clip: 100.0,
-        aspect_ratio: 16. / 9.,
+    let node_model = {
+        let (vertices, indices) = (
+            [vert(0., 0.), vert(0., 1.), vert(1., 0.), vert(1., 1.)],
+            [0u32, 1, 2, 1, 2, 3]);
+        (VertexBuffer::new(&display, &vertices).unwrap(),
+        IndexBuffer::new(&display, PrimitiveType::TrianglesList, &indices).unwrap())
     };
-    let shape = vec![Vertex {
-        position: [0., 0.],
-    }, Vertex {
-        position: [0., 1.],
-    }, Vertex {
-        position: [1., 0.],
-    }, Vertex {
-        position: [1., 1.],
-    }];
-    let vertices = glium::VertexBuffer::new(&display, &shape).unwrap();
-    let indices = IndexBuffer::new(&display, PrimitiveType::TrianglesList, &[0u32, 1, 2, 1, 2, 3]).unwrap();
+    let thingy_model = &node_model;
+
+    let back_model = {
+        let (vertices, indices) = rounded_rectangle((1., 1.), (0.05, 0.05, 0.05, 0.05));
+        (VertexBuffer::new(&display, &vertices).unwrap(),
+        IndexBuffer::new(&display, PrimitiveType::TrianglesList, &indices).unwrap())
+    };
 
     let thingy_size = 0.1;
     let thingy_scale = [[thingy_size, 0., 0., 0.],
@@ -130,12 +134,20 @@ fn main() {
 
     let mut line_program = Shader::new();
     line_program.add_vertex("gl_Position = matrix * vec4(position, 0.0, 1.0);\n");
-    line_program.add_fragment("color = vec4(1.0, 1.0, 1.0, 1.0);\n");
+    line_program.add_fragment("color = vec4(1.);\n");
     let line_program = line_program.build(&display);
     let thingy_program = &line_program;
+    let back_program = &line_program;
 
     let mut running = true;
     while running {
+        let (width, height) = display.get_framebuffer_dimensions();
+        let perspective = CameraPerspective {
+            fov: 90.,
+            near_clip: 0.1,
+            far_clip: 100.0,
+            aspect_ratio: width as f32 / height as f32,
+        };
         for event in display.poll_events() {
             use glium::glutin::Event::*;
             use glium::glutin::ElementState::*;
@@ -143,44 +155,97 @@ fn main() {
             use glium::glutin::VirtualKeyCode as Key;
             match event {
                 Closed => running = false,
+                ReceivedCharacter(c) => {
+                    if let Some(Writing) = state {
+                        if !c.is_whitespace() && !c.is_control() {
+                            text.push(c);
+                            println!("text: {:?}", text);
+                        }
+                    }
+                },
+                KeyboardInput(Pressed, _, Some(Key::Back)) => {
+                    if let Some(Writing) = state {
+                        text.pop();
+                        println!("text: {:?}", text);
+                    }
+                },
+                KeyboardInput(Pressed, _, Some(Key::Escape)) => {
+                    if let Some(Writing) = state {
+                        println!("Stopped writing!");
+                        text.clear();
+                        selected = None;
+                        state = None;
+                    }
+                },
+                KeyboardInput(Pressed, _, Some(Key::Return)) => {
+                    if let Some(Writing) = state {
+                        if let Some(Selection::Node(n)) = selected {
+                            let mut split = text.split(":");
+                            dag.node_weight(n)
+                                .unwrap()
+                                .process
+                                .borrow_mut()
+                                .modify(split.next().unwrap().into(), split.next().unwrap().into());
+                            update_dag(&display, &dag, n);
+                        }
+                        text.clear();
+                        selected = None;
+                        state = None;
+                    } else if let None = state {
+                        if let n @ Some(Selection::Node(_)) = find_selected(&dag, mouse_pos, thingy_size) {
+                            println!("Started writing!");
+                            selected = n;
+                            state = Some(Writing);
+                        }
+                    }
+                },
                 KeyboardInput(Pressed, _, Some(Key::Key1)) => {
-                    let n = dag.add_node(Node::new(inputs::Constant::new([1., 1., 1., 1.]), mouse_pos));
-                    update_dag(&display, &dag, n);
+                    if let None = state {
+                        let n = dag.add_node(Node::new(inputs::Constant::new([1., 1., 1., 1.]), mouse_pos));
+                        update_dag(&display, &dag, n);
+                    }
                 },
                 KeyboardInput(Pressed, _, Some(Key::Key2)) => {
-                    let n = dag.add_node(Node::new(combiners::Blend::new(BlendType::Multiply, BlendType::Normal), mouse_pos));
-                    update_dag(&display, &dag, n);
+                    if let None = state {
+                        let n = dag.add_node(Node::new(combiners::Blend::new(BlendType::Multiply, BlendType::Normal), mouse_pos));
+                        update_dag(&display, &dag, n);
+                    }
                 },
                 MouseInput(Pressed, Mouse::Middle) => {
-                    if let Some(Selection::Node(n)) = find_selected(&dag, mouse_pos, thingy_size) {
-                        let children = dag.children(n).map(|(_, n, _)| n).collect::<Vec<_>>();
-                        dag.remove_outgoing_edges(n);
-                        for c in children {
-                            update_dag(&display, &dag, c);
+                    if let None = state {
+                        if let Some(Selection::Node(n)) = find_selected(&dag, mouse_pos, thingy_size) {
+                            let children = dag.children(n).map(|(_, n, _)| n).collect::<Vec<_>>();
+                            dag.remove_outgoing_edges(n);
+                            for c in children {
+                                update_dag(&display, &dag, c);
+                            }
+                            dag.remove_node(n);
                         }
-                        dag.remove_node(n);
                     }
                 },
                 MouseInput(Pressed, Mouse::Left) => {
-                    state = Some(AddingEdge);
-                    match find_selected(&dag, mouse_pos, thingy_size) {
-                        s @ Some(Selection::Output(..)) => {
-                            selected = s;
-                        },
-                        Some(Selection::Input(n, i)) => {
-                            let (s, i) = dag.remove_edge_to_port(n, i).unwrap();
-                            update_dag(&display, &dag, n);
-                            selected = Some(Selection::Output(s, i));
-                        },
-                        _ => {}
+                    if let None = state {
+                        state = Some(AddingEdge);
+                        match find_selected(&dag, mouse_pos, thingy_size) {
+                            s @ Some(Selection::Output(..)) => {
+                                selected = s;
+                            },
+                            Some(Selection::Input(n, i)) => {
+                                let (s, i) = dag.remove_edge_to_port(n, i).unwrap();
+                                update_dag(&display, &dag, n);
+                                selected = Some(Selection::Output(s, i));
+                            },
+                            _ => {}
+                        }
                     }
                 },
                 MouseInput(Released, Mouse::Left) => {
                     if let Some(AddingEdge) = state {
                         if let Some(Selection::Output(source, i)) = selected {
                             if let Some(Selection::Input(target, o)) = find_selected(&dag, mouse_pos, thingy_size) {
-                                let _ = dag.update_edge(source, i, target, o);
-                                update_dag(&display, &dag, target);
+                                if let Ok(_) = dag.update_edge(source, i, target, o) {
+                                    update_dag(&display, &dag, target);
+                                }
                             }
                         }
                         state = None;
@@ -188,8 +253,10 @@ fn main() {
                     }
                 },
                 MouseInput(Pressed, Mouse::Right) => {
-                    state = Some(Dragging);
-                    selected = find_selected(&dag, mouse_pos, thingy_size);
+                    if let None = state {
+                        state = Some(Dragging);
+                        selected = find_selected(&dag, mouse_pos, thingy_size);
+                    }
                 },
                 MouseInput(Released, Mouse::Right) => {
                     if let Some(Dragging) = state {
@@ -216,7 +283,7 @@ fn main() {
         camera.position = [0., 0., -5.];
         let projection = perspective.projection();
         let mut target = display.draw();
-        target.clear_color(0., 0., 0., 1.);
+        target.clear_color(0.0157, 0.0173, 0.0204, 1.);//0., 0., 0., 1.);
         let draw_params = DrawParameters {
             blend: Blend {
                 color: Addition {
@@ -236,10 +303,37 @@ fn main() {
             let node = &node.weight;
             let x = node.position[0] - 0.5;
             let y = -node.position[1] - 0.5;
+            //Background of node
             let mut matrix = [[1., 0., 0., 0.],
                               [0., 1., 0., 0.],
                               [0., 0., 1., 0.],
-                              [ x,  y, 0., 1.]];
+                              [x , y , 0., 1.]];
+            matrix = model_view_projection(matrix, view, projection);
+            let program = back_program;
+            let uniforms = uniform! {
+                matrix: matrix,
+            };
+
+            let vertices = &back_model.0;
+            let indices = &back_model.1;
+            target.draw(vertices,
+                        indices,
+                        &program,
+                        &uniforms,
+                        &draw_params)
+                  .unwrap();
+            //Node
+            let x = x + 0.05;
+            let y = y + 0.05;
+            let mut matrix = [[1., 0., 0., 0.],
+                              [0., 1., 0., 0.],
+                              [0., 0., 1., 0.],
+                              [x , y , 0., 1.]];
+            matrix = col_mat4_mul(matrix,
+                             [[0.9, 0. , 0., 0.],
+                              [0. , 0.9, 0., 0.],
+                              [0. , 0. , 1., 0.],
+                              [0. , 0. , 0., 1.]]);
             matrix = model_view_projection(matrix, view, projection);
             let program = node.program.borrow();
             let program = program.as_ref().unwrap();
@@ -247,8 +341,10 @@ fn main() {
                 matrix: matrix,
             };
 
-            target.draw(&vertices,
-                        &indices,
+            let vertices = &node_model.0;
+            let indices = &node_model.1;
+            target.draw(vertices,
+                        indices,
                         &program,
                         &uniforms,
                         &draw_params)
@@ -260,14 +356,16 @@ fn main() {
                 let mut matrix = [[1., 0., 0., 0.],
                                   [0., 1., 0., 0.],
                                   [0., 0., 1., 0.],
-                                  [ x,  y, 0., 1.]];
+                                  [x , y , 0., 1.]];
                 matrix = col_mat4_mul(matrix, thingy_scale);
                 matrix = model_view_projection(matrix, view, projection);
                 let uniforms = uniform! {
                     matrix: matrix,
                 };
-                target.draw(&vertices,
-                            &indices,
+                let vertices = &thingy_model.0;
+                let indices = &thingy_model.1;
+                target.draw(vertices,
+                            indices,
                             &thingy_program,
                             &uniforms,
                             &draw_params)
@@ -281,14 +379,16 @@ fn main() {
                 let mut matrix = [[1., 0., 0., 0.],
                                   [0., 1., 0., 0.],
                                   [0., 0., 1., 0.],
-                                  [ x,  y, 0., 1.]];
+                                  [x , y , 0., 1.]];
                 matrix = col_mat4_mul(matrix, thingy_scale);
                 matrix = model_view_projection(matrix, view, projection);
                 let uniforms = uniform! {
                     matrix: matrix,
                 };
-                target.draw(&vertices,
-                            &indices,
+                let vertices = &thingy_model.0;
+                let indices = &thingy_model.1;
+                target.draw(vertices,
+                            indices,
                             &thingy_program,
                             &uniforms,
                             &draw_params)
@@ -363,7 +463,7 @@ fn update_node<F: Facade>(facade: &F, dag: &PortNumbered<Node>, node: NodeIndex)
     result.add_vertex("gl_Position = matrix * vec4(position, 0, 1);\n");
     result.add_fragment("vec4 one = vec4(1, 1, 1, 1);\n");
     recurse(&mut result, dag, node, &mut HashSet::new());
-    result.add_fragment(format!("color = out_{}_0;\n", node.index()));//clamp(out_{}_0, 0, 1);\n", node.index()));
+    result.add_fragment(format!("color = out_{}_0;\n", node.index()));
     *dag.node_weight(node).unwrap().program.borrow_mut() = Some(result.build(facade));
 }
 
@@ -487,4 +587,65 @@ pub fn line_intersects_plane(camera: &Camera,
     } else {
         panic!("Something unexpected happened with targetting.");
     }
+}
+
+
+fn rounded_rectangle((width, height): (f32, f32), (tlr, trr, blr, brr): (f32, f32, f32, f32)) -> (Vec<Vertex>, Vec<u32>) {
+    fn do_corner(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, cur: f32, (x, y): (f32, f32), (a, b, c): (u32, u32, u32), angle: f32) {
+        if cur > 0. {
+            let num_sides = (0.25 * cur).max(1.);
+            for i in 0..num_sides as usize {
+                let i = i + 1;
+                let radians = (i as f32 / (num_sides + 1.)) * 0.25 * TAU + angle;
+                let sin = radians.sin();
+                let cos = radians.cos();
+                let x = x + sin * cur;
+                let y = y - cos * cur;
+
+                vertices.push(vert(x, y));
+
+                let d = vertices.len() as u32 - 1;
+                if i == 1  {
+                    indices.extend(&[a, b, d][..]);
+                } else {
+                    indices.extend(&[a, d - 1, d][..]);
+                }
+
+                if i == num_sides as usize {
+                    indices.extend(&[a, d, c][..]);
+                }
+            }
+        }
+    }
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let half = 0.5 * width.min(height);
+    let tlr = half.min(tlr);
+    let trr = half.min(trr);
+    let blr = half.min(blr);
+    let brr = half.min(brr);
+
+    vertices.push(vert(tlr, 0. ));
+    vertices.push(vert(tlr, tlr));
+    vertices.push(vert(0. , tlr));
+
+    vertices.push(vert(width - trr, 0. ));
+    vertices.push(vert(width - trr, trr));
+    vertices.push(vert(width - 0. , trr));
+
+    vertices.push(vert(blr, height - 0. ));
+    vertices.push(vert(blr, height - blr));
+    vertices.push(vert(0. , height - blr));
+
+    vertices.push(vert(width - brr, height - 0. ));
+    vertices.push(vert(width - brr, height - brr));
+    vertices.push(vert(width - 0. , height - brr));
+
+    indices.extend(&[0,3,1, 1,3,4, 2,1,8, 8,1,7, 7,1,4, 7,4,10, 10,4,5, 10,5,11, 6,7,10, 6,10,9][..]);
+
+    do_corner(&mut vertices, &mut indices, tlr, (   0. + tlr,     0. + tlr), ( 1,  2, 0), 0.75 * TAU);
+    do_corner(&mut vertices, &mut indices, trr, (width - trr,     0. + trr), ( 4,  3, 5), 0.00 * TAU);
+    do_corner(&mut vertices, &mut indices, brr, (width - brr, height - brr), (10, 11, 9), 0.25 * TAU);
+    do_corner(&mut vertices, &mut indices, brr, (   0. + blr, height - blr), ( 7,  6, 8), 0.50 * TAU);
+    (vertices, indices)
 }
