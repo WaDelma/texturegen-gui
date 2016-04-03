@@ -3,6 +3,7 @@ extern crate glium;
 extern crate daggy;
 extern crate cam;
 extern crate vecmath;
+extern crate bit_set;
 
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -16,6 +17,8 @@ use glium::draw_parameters::{DrawParameters};
 use glium::draw_parameters::LinearBlendingFactor::*;
 use glium::draw_parameters::BlendingFunction::*;
 
+use bit_set::BitSet;
+
 use vecmath::*;
 
 use cam::{model_view_projection, Camera, CameraPerspective};
@@ -24,8 +27,9 @@ use daggy::{Walker, NodeIndex};
 
 use State::*;
 use process::Process;
+use process::combiners::BlendType;
 use dag::PortNumbered;
-use shader::Shader;
+use shader::{Context, Shader};
 
 mod dag;
 mod shader;
@@ -81,18 +85,18 @@ fn main() {
     let display = WindowBuilder::new().build_glium().unwrap();
     let mut mouse_pos = [0.; 2];
     let mut dag = PortNumbered::<Node, u32>::new();
-    let n1 = dag.add_node(Node::new(process::Constant::new([255, 0, 0, 255]), [-2., -2.]));
-    let n2 = dag.add_node(Node::new(process::Constant::new([0, 255, 0, 255]), [0., -2.]));
-    let n3 = dag.add_node(Node::new(process::Constant::new([0, 0, 255, 255]), [2., -2.]));
-    let n4 = dag.add_node(Node::new(process::Blend::new(), [2., 0.]));
-    let _ = dag.add_edge(n1, 1, n4, 1).unwrap();
-    let _ = dag.add_edge(n3, 1, n4, 2).unwrap();
-    let n5 = dag.add_node(Node::new(process::Blend::new(), [-2., 0.]));
-    let _ = dag.add_edge(n1, 1, n5, 1).unwrap();
-    let _ = dag.add_edge(n2, 1, n5, 2).unwrap();
-    let n6 = dag.add_node(Node::new(process::Blend::new(), [0., 2.]));
-    let _ = dag.add_edge(n4, 1, n6, 2).unwrap();
-    let _ = dag.add_edge(n5, 1, n6, 1).unwrap();
+    let n1 = dag.add_node(Node::new(process::Constant::new([1., 0., 0., 1.]), [-2., -2.]));
+    let n2 = dag.add_node(Node::new(process::Constant::new([0., 1., 0., 1.]), [0., -2.]));
+    let n3 = dag.add_node(Node::new(process::Constant::new([0., 0., 1., 1.]), [2., -2.]));
+    let n4 = dag.add_node(Node::new(process::Blend::new(BlendType::Hard, BlendType::Screen), [2., 0.]));
+    let _ = dag.update_edge(n1, 0, n4, 0).unwrap();
+    let _ = dag.update_edge(n3, 0, n4, 1).unwrap();
+    let n5 = dag.add_node(Node::new(process::Blend::new(BlendType::Soft, BlendType::Normal), [-2., 0.]));
+    let _ = dag.update_edge(n1, 0, n5, 0).unwrap();
+    let _ = dag.update_edge(n2, 0, n5, 1).unwrap();
+    let n6 = dag.add_node(Node::new(process::Blend::new(BlendType::Screen, BlendType::Normal), [0., 2.]));
+    let _ = dag.update_edge(n4, 0, n6, 1).unwrap();
+    let _ = dag.update_edge(n5, 0, n6, 0).unwrap();
     update_dag(&display, &dag, n1);
     update_dag(&display, &dag, n2);
     update_dag(&display, &dag, n3);
@@ -124,8 +128,8 @@ fn main() {
                         [0., 0., 0., 1.]];
 
     let mut line_program = Shader::new();
-    line_program.add_vertex("gl_Position = matrix * vec4(position, 0.0, 1.0);");
-    line_program.add_fragment("color = vec4(1.0, 1.0, 1.0, 1.0);");
+    line_program.add_vertex("gl_Position = matrix * vec4(position, 0.0, 1.0);\n");
+    line_program.add_fragment("color = vec4(1.0, 1.0, 1.0, 1.0);\n");
     let line_program = line_program.build(&display);
     let thingy_program = &line_program;
 
@@ -139,11 +143,11 @@ fn main() {
             match event {
                 Closed => running = false,
                 KeyboardInput(Pressed, _, Some(Key::Key1)) => {
-                    let n = dag.add_node(Node::new(process::Constant::new([255, 255, 255, 255]), mouse_pos));
+                    let n = dag.add_node(Node::new(process::Constant::new([1., 1., 1., 1.]), mouse_pos));
                     update_dag(&display, &dag, n);
                 },
                 KeyboardInput(Pressed, _, Some(Key::Key2)) => {
-                    let n = dag.add_node(Node::new(process::Blend::new(), mouse_pos));
+                    let n = dag.add_node(Node::new(process::Blend::new(BlendType::Multiply, BlendType::Normal), mouse_pos));
                     update_dag(&display, &dag, n);
                 },
                 MouseInput(Pressed, Mouse::Middle) => {
@@ -174,7 +178,7 @@ fn main() {
                     if let Some(AddingEdge) = state {
                         if let Some(Selection::Output(source, i)) = selected {
                             if let Some(Selection::Input(target, o)) = find_selected(&dag, mouse_pos, thingy_size) {
-                                let _ = dag.add_edge(source, i, target, o);
+                                let _ = dag.update_edge(source, i, target, o);
                                 update_dag(&display, &dag, target);
                             }
                         }
@@ -249,7 +253,7 @@ fn main() {
                         &draw_params)
                   .unwrap();
             for s in 0..node.max_out() {
-                let pos = output_pos(node, s + 1, thingy_size);
+                let pos = output_pos(node, s, thingy_size);
                 let x = pos[0] - thingy_size / 2.;
                 let y = pos[1];
                 let mut matrix = [[1., 0., 0., 0.],
@@ -270,7 +274,7 @@ fn main() {
             }
 
             for t in 0..node.max_in() {
-                let pos = input_pos(node, t + 1, thingy_size);
+                let pos = input_pos(node, t, thingy_size);
                 let x = pos[0] - thingy_size / 2.;
                 let y = pos[1];
                 let mut matrix = [[1., 0., 0., 0.],
@@ -341,31 +345,34 @@ fn update_node<F: Facade>(facade: &F, dag: &PortNumbered<Node>, node: NodeIndex)
             return;
         }
         visited.insert(node);
-        let sources = dag.node_weight(node).unwrap().process.borrow().max_in();
-        for s in 0..sources {
-            shader.add_fragment(format!("vec4 s{}_{} = vec4(0., 0., 0., 0.);\n", node.index(), s + 1));
+        let process = dag.node_weight(node).unwrap().process.borrow();
+        for s in 0..process.max_in() {
+            shader.add_fragment(format!("vec4 in_{}_{} = vec4(0, 0, 0, 0);\n", node.index(), s));
         }
+        let mut inputs = BitSet::new();
         for (parent, source, target) in dag.parents(node) {
+            inputs.insert(target as usize);
             recurse(shader, dag, parent, visited);
-            shader.add_fragment(format!("s{}_{} = t{}_{};\n", node.index(), target, parent.index(), source));
+            shader.add_fragment(format!("in_{}_{} = out_{}_{};\n", node.index(), target, parent.index(), source));
         }
-        shader.add_fragment(dag.node_weight(node).unwrap().process.borrow().shader(node.index()));
+        let mut context = Context::new(node.index(), inputs, process.max_out());
+        shader.add_fragment(process.shader(&mut context));
     }
     let mut result = Shader::new();
-    result.add_vertex("gl_Position = matrix * vec4(position, 0., 1.);\n");
-    let mut visited = HashSet::new();
-    recurse(&mut result, dag, node, &mut visited);
-    result.add_fragment(format!("color = t{}_1;\n", node.index()));
+    result.add_vertex("gl_Position = matrix * vec4(position, 0, 1);\n");
+    result.add_fragment("vec4 one = vec4(1, 1, 1, 1);\n");
+    recurse(&mut result, dag, node, &mut HashSet::new());
+    result.add_fragment(format!("color = out_{}_0", node.index()));//clamp(out_{}_0, 0, 1);\n", node.index()));
     *dag.node_weight(node).unwrap().program.borrow_mut() = Some(result.build(facade));
 }
 
 fn input_pos(node: &Node, index: u32, _size: f32) -> [f32; 2] {
-    [node.position[0] - 0.5 + (index as f32 / (node.max_in() + 1) as f32),
+    [node.position[0] - 0.5 + ((index + 1) as f32 / (node.max_in() + 1) as f32),
     -(node.position[1] - 0.5)]
 }
 
 fn output_pos(node: &Node, index: u32, size: f32) -> [f32; 2] {
-    [node.position[0] - 0.5 + (index as f32 / (node.max_out() + 1) as f32),
+    [node.position[0] - 0.5 + ((index + 1) as f32 / (node.max_out() + 1) as f32),
     -(node.position[1] + 0.5 + size)]
 }
 
@@ -413,20 +420,20 @@ fn find_selected(dag: &PortNumbered<Node>, mouse_pos: [f32; 2], size: f32) -> Op
                 }
             }
             for s in 0..n.weight.max_out() {
-                let pos = output_pos(&n.weight, s + 1, size);
+                let pos = output_pos(&n.weight, s, size);
                 let pos = [pos[0], -pos[1]];
                 if pos[0] - size < mouse_pos[0] && mouse_pos[0] < pos[0] + size {
                     if pos[1] - size < mouse_pos[1] && mouse_pos[1] < pos[1] + size {
-                        return Some(Selection::Output(i, s + 1));
+                        return Some(Selection::Output(i, s));
                     }
                 }
             }
             for t in 0..n.weight.max_in() {
-                let pos = input_pos(&n.weight, t + 1, size);
+                let pos = input_pos(&n.weight, t, size);
                 let pos = [pos[0], -pos[1]];
                 if pos[0] - size < mouse_pos[0] && mouse_pos[0] < pos[0] + size {
                     if pos[1] - size < mouse_pos[1] && mouse_pos[1] < pos[1] + size {
-                        return Some(Selection::Input(i, t + 1));
+                        return Some(Selection::Input(i, t));
                     }
                 }
             }
