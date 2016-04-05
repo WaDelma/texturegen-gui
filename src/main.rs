@@ -1,28 +1,41 @@
 #[macro_use]
 extern crate glium;
 extern crate daggy;
-extern crate cam;
 extern crate vecmath;
 extern crate bit_set;
+extern crate rusttype;
+extern crate arrayvec;
+extern crate unicode_normalization;
 
+use std::borrow::Cow;
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::f32;
+use std::path::PathBuf;
+use std::fs::File;
+use std::io::Read;
 
-use glium::VertexBuffer;
+use rusttype::{FontCollection, Font, Scale, point, vector, PositionedGlyph};
+use rusttype::gpu_cache::{Cache};
+use rusttype::Rect;
+
+use arrayvec::ArrayVec;
+
+use glium::{Frame, VertexBuffer, DisplayBuild, Blend, Program, Surface};
+use glium::texture::{Texture2d, RawImage2d, MipmapsOption, UncompressedFloatFormat, ClientFormat};
 use glium::backend::Facade;
+use glium::backend::glutin_backend::GlutinFacade;
 use glium::glutin::WindowBuilder;
-use glium::{DisplayBuild, Blend, Program, Surface};
-use glium::index::{IndexBuffer, PrimitiveType};
+use glium::index::{NoIndices, IndexBuffer, PrimitiveType};
 use glium::draw_parameters::{DrawParameters};
 use glium::draw_parameters::LinearBlendingFactor::*;
 use glium::draw_parameters::BlendingFunction::*;
+use glium::uniforms::{MinifySamplerFilter, MagnifySamplerFilter};
 
 use bit_set::BitSet;
 
 use vecmath::*;
-
-use cam::{model_view_projection, Camera, CameraPerspective};
 
 use daggy::{Walker, NodeIndex};
 
@@ -86,11 +99,261 @@ enum Selection {
     Node(NodeIndex),
     Input(NodeIndex, u32),
     Output(NodeIndex, u32),
+    Setting(NodeIndex, usize),
+}
+
+struct Fonts<'a> {
+    dpi_factor: f32,
+    cache: Cache,
+    cache_tex: Texture2d,
+    program: Program,
+    program_bg: Program,
+    fonts: HashMap<usize, Font<'a>>,
+}
+
+impl<'a> Fonts<'a> {
+    fn new(display: &GlutinFacade) -> Fonts {
+        let dpi_factor = display.get_window().unwrap().hidpi_factor();
+        let (w, h) = display.get_framebuffer_dimensions();
+        let (cache_width, cache_height) = (w * dpi_factor as u32, h * dpi_factor as u32);
+        Fonts {
+            fonts: HashMap::new(),
+            dpi_factor: dpi_factor,
+            cache: Cache::new(cache_width, cache_height, 0.1, 0.1),
+            program: program!(
+                display,
+                140 => {
+                    vertex: "
+                        #version 140
+                        in vec2 position;
+                        in vec2 tex_coords;
+                        uniform vec4 color;
+                        out vec2 v_tex_coords;
+                        out vec4 v_color;
+                        void main() {
+                            gl_Position = vec4(position, 0.0, 1.0);
+                            v_tex_coords = tex_coords;
+                            v_color = color;
+                        }
+                    ",
+                    fragment: "
+                        #version 140
+                        uniform sampler2D tex;
+                        in vec2 v_tex_coords;
+                        in vec4 v_color;
+                        out vec4 color;
+                        void main() {
+                            color = v_color * vec4(1.0, 1.0, 1.0, texture(tex, v_tex_coords).r);
+                        }
+                    "
+                }).unwrap(),
+            program_bg: program!(
+                display,
+                140 => {
+                    vertex: "
+                        #version 140
+                        in vec2 position;
+                        uniform vec4 color;
+                        out vec4 v_color;
+                        void main() {
+                            gl_Position = vec4(position, 0.0, 1.0);
+                            v_color = color;
+                        }
+                    ",
+                    fragment: "
+                        #version 140
+                        in vec4 v_color;
+                        out vec4 color;
+                        void main() {
+                            color = v_color;
+                        }
+                    "
+                }).unwrap(),
+            cache_tex: Texture2d::with_format(
+                display,
+                RawImage2d {
+                    data: Cow::Owned(vec![128u8; cache_width as usize * cache_height as usize]),
+                    width: cache_width,
+                    height: cache_height,
+                    format: ClientFormat::U8
+                },
+            UncompressedFloatFormat::U8,
+            MipmapsOption::NoMipmap).unwrap(),
+        }
+    }
+
+    pub fn register(&mut self, font: Font<'a>) -> usize {
+        let id = self.fonts.len();
+        self.fonts.insert(id, font);
+        id
+    }
+
+    pub fn bounding_box(&self, font: usize, size: f32, text: &str) -> Option<Rect<f32>> {
+        let font = self.fonts.get(&font).expect(&format!("Font with id {} didn't exist.", font));
+        self.layout(font, Scale::uniform(size * self.dpi_factor), text).1
+    }
+
+    fn layout<'b>(&self, font: &'b Font, scale: Scale, text: &str) -> (Vec<PositionedGlyph<'b>>, Option<Rect<f32>>) {
+        use unicode_normalization::UnicodeNormalization;
+        let mut result = Vec::new();
+        let metrics = font.v_metrics(scale);
+        let advance_height = metrics.ascent - metrics.descent + metrics.line_gap;
+        let mut caret = point(0.0, metrics.ascent - advance_height / 2.);
+        let mut last_glyph = None;
+        for c in text.nfc() {
+            if c.is_control() {
+                continue;
+            }
+            let cur = if let Some(g) = font.glyph(c) {
+                g
+            } else {
+                continue;
+            };
+            if let Some(id) = last_glyph.take() {
+                caret.x += font.pair_kerning(scale, id, cur.id());
+            }
+            last_glyph = Some(cur.id());
+            let glyph = cur.scaled(scale).positioned(caret);
+            caret.x += glyph.unpositioned().h_metrics().advance_width;
+            result.push(glyph);
+        }
+        if result.is_empty() {
+            return (result, None);
+        }
+        let mut bg = Rect {min: point(f32::MAX, f32::MAX), max: point(f32::MIN, f32::MIN)};
+        for glyph in &result {
+            if let Some(Rect{min, max}) = glyph.pixel_bounding_box() {
+                bg.min.x = bg.min.x.min(min.x as f32);
+                bg.min.y = bg.min.y.min(min.y as f32);
+                bg.max.x = bg.max.x.max(max.x as f32);
+                bg.max.y = bg.max.y.max(max.y as f32);
+            }
+        }
+        (result, Some(bg))
+    }
+
+    fn draw_text(&mut self, display: &GlutinFacade, target: &mut Frame, font: usize, size: f32, color: [f32; 4], pos: [f32; 2], text: &str) {
+        fn get_rect(min: rusttype::Point<u32>, tex: &RawImage2d<u8>) -> glium::Rect {
+            glium::Rect {
+                left: min.x,
+                bottom: min.y,
+                width: tex.width,
+                height: tex.height,
+            }
+        }
+        let (w, h) = display.get_framebuffer_dimensions();
+        let (w, h) = (w as f32, h as f32);
+        let origin = point(pos[0], pos[1]);
+        let font_data = self.fonts.get(&font).expect(&format!("Font with id {} didn't exist.", font));
+        let (glyphs, bg) = self.layout(font_data, Scale::uniform(size * self.dpi_factor), text);
+        if let Some(bg) = bg {
+            let min = vector(bg.min.x as f32 / w, -bg.min.y as f32 / h) - vector(0.5, -0.5);
+            let max = vector(bg.max.x as f32 / w, -bg.max.y as f32 / h) - vector(0.5, -0.5);
+            let pos = Rect {
+                min: origin + min * 2.,
+                max: origin + max * 2.,
+            };
+            let vertices = VertexBuffer::new(display, &[
+                vert(pos.min.x, pos.max.y),
+                vert(pos.min.x, pos.min.y),
+                vert(pos.max.x, pos.min.y),
+                vert(pos.max.x, pos.min.y),
+                vert(pos.max.x, pos.max.y),
+                vert(pos.min.x, pos.max.y),
+            ]).unwrap();
+            let uniforms = uniform! {
+                color: [1f32; 4],
+            };
+            target.draw(&vertices,
+                        NoIndices(PrimitiveType::TrianglesList),
+                        &self.program_bg, &uniforms,
+                        &DrawParameters {
+                            blend: Blend::alpha_blending(),
+                            ..Default::default()
+                        }).unwrap();
+        }
+
+        for glyph in &glyphs {
+            self.cache.queue_glyph(font, glyph.clone());
+        }
+        let cache_tex = &self.cache_tex;
+        self.cache.cache_queued(|rect, data| {
+            let tex = RawImage2d {
+                data: Cow::Borrowed(data),
+                width: rect.width(),
+                height: rect.height(),
+                format: ClientFormat::U8,
+            };
+            cache_tex.main_level().write(get_rect(rect.min, &tex), tex);
+        }).unwrap();
+        let uniforms = uniform! {
+            tex: self.cache_tex.sampled()
+                .magnify_filter(MagnifySamplerFilter::Nearest)
+                .minify_filter(MinifySamplerFilter::Nearest),
+            color: color,
+        };
+        let vertex_buffer = {
+            #[derive(Copy, Clone)]
+            struct Vertex {
+                position: [f32; 2],
+                tex_coords: [f32; 2]
+            }
+            fn vertex(position: [f32; 2], tex_coords: [f32; 2]) -> Vertex {
+                Vertex {
+                    position: position,
+                    tex_coords: tex_coords,
+                }
+            }
+            implement_vertex!(Vertex, position, tex_coords);
+            let vertices = glyphs.iter().flat_map(|g| {
+                if let Ok(Some((uv, screen))) = self.cache.rect_for(font, g) {
+                    let min = vector(screen.min.x as f32 / w, -screen.min.y as f32 / h) - vector(0.5, -0.5);
+                    let max = vector(screen.max.x as f32 / w, -screen.max.y as f32 / h) - vector(0.5, -0.5);
+                    let pos = Rect {
+                        min: origin + min * 2.,
+                        max: origin + max * 2.,
+                    };
+                    ArrayVec::from([
+                        vertex([pos.min.x, pos.max.y], [uv.min.x, uv.max.y]),
+                        vertex([pos.min.x, pos.min.y], [uv.min.x, uv.min.y]),
+                        vertex([pos.max.x, pos.min.y], [uv.max.x, uv.min.y]),
+                        vertex([pos.max.x, pos.min.y], [uv.max.x, uv.min.y]),
+                        vertex([pos.max.x, pos.max.y], [uv.max.x, uv.max.y]),
+                        vertex([pos.min.x, pos.max.y], [uv.min.x, uv.max.y]),
+                    ])
+                } else {
+                    ArrayVec::new()
+                }
+            }).collect::<Vec<_>>();
+            VertexBuffer::new(display, &vertices).unwrap()
+        };
+        target.draw(&vertex_buffer,
+                    NoIndices(PrimitiveType::TrianglesList),
+                    &self.program, &uniforms,
+                    &DrawParameters {
+                        blend: Blend::alpha_blending(),
+                        ..Default::default()
+                    }).unwrap();
+    }
 }
 
 fn main() {
     let display = WindowBuilder::new().build_glium().unwrap();
-    let mut mouse_pos = [0.; 2];
+
+    let path = PathBuf::from("assets")
+        .join("fonts")
+        .join("anka")
+        .join("bold")
+        .with_extension("ttf");
+    let mut file = File::open(path).unwrap();
+    let mut buffer = vec![];
+    file.read_to_end(&mut buffer).unwrap();
+    let font_data = &buffer[..];
+
+    let mut fonts = Fonts::new(&display);
+    let font = fonts.register(FontCollection::from_bytes(font_data).into_font().unwrap());
+
+    let mut mouse_window_pos = [0; 2];
     let mut dag = PortNumbered::<Node, u32>::new();
     let n1 = dag.add_node(Node::new(inputs::Constant::new([1., 0., 0., 1.]), [-2., -2.]));
     let n2 = dag.add_node(Node::new(inputs::Constant::new([0., 1., 0., 1.]), [0., -2.]));
@@ -110,7 +373,6 @@ fn main() {
     let mut selected = None;
     let mut state = None;
     let mut text = String::new();
-    let mut camera = Camera::new([0., 0., -5.]);
     let node_model = {
         let (vertices, indices) = (
             [vert(0., 0.), vert(0., 1.), vert(1., 0.), vert(1., 1.)],
@@ -133,26 +395,35 @@ fn main() {
                         [0., 0., 0., 1.]];
 
     let mut line_program = Shader::new();
-    line_program.add_vertex("gl_Position = matrix * vec4(position, 0.0, 1.0);\n");
-    line_program.add_fragment("color = vec4(1.);\n");
+    line_program.add_vertex("gl_Position = matrix * vec4(position, 0, 1);\n");
+    line_program.add_fragment("color = vec4(1);\n");
     let line_program = line_program.build(&display);
     let thingy_program = &line_program;
     let back_program = &line_program;
+    let mut zoom = 150.;
 
     let mut running = true;
     while running {
-        let (width, height) = display.get_framebuffer_dimensions();
-        let perspective = CameraPerspective {
-            fov: 90.,
-            near_clip: 0.1,
-            far_clip: 100.0,
-            aspect_ratio: width as f32 / height as f32,
-        };
+        let (w, h) = display.get_framebuffer_dimensions();
+        let cam = [[zoom / w as f32, 0., 0., 0.],
+                   [0., zoom / h as f32, 0., 0.],
+                   [0., 0., 1., 0.],
+                   [0., 0., 0., 1.]];
+        let rel_x = mouse_window_pos[0] as f32 / w as f32 - 0.5;
+        let rel_y = mouse_window_pos[1] as f32 / h as f32 - 0.5;
+        let m = inverse_transform(cam, [rel_x, rel_y]);
+        let mouse_pos = [m[0] * 2., m[1] * 2.];
+        if let Some(Dragging) = state {
+            if let Some(Selection::Node(o)) = selected {
+                dag.node_weight_mut(o).unwrap().position = mouse_pos;
+            }
+        }
         for event in display.poll_events() {
             use glium::glutin::Event::*;
             use glium::glutin::ElementState::*;
             use glium::glutin::MouseButton as Mouse;
             use glium::glutin::VirtualKeyCode as Key;
+            use glium::glutin::MouseScrollDelta;
             match event {
                 Closed => running = false,
                 ReceivedCharacter(c) => {
@@ -179,24 +450,18 @@ fn main() {
                 },
                 KeyboardInput(Pressed, _, Some(Key::Return)) => {
                     if let Some(Writing) = state {
-                        if let Some(Selection::Node(n)) = selected {
-                            let mut split = text.split(":");
+                        if let Some(Selection::Setting(n, i)) = selected {
+                            println!("Confirmed writing!");
                             dag.node_weight(n)
                                 .unwrap()
                                 .process
                                 .borrow_mut()
-                                .modify(split.next().unwrap().into(), split.next().unwrap().into());
+                                .modify(i, text.clone());
                             update_dag(&display, &dag, n);
                         }
                         text.clear();
                         selected = None;
                         state = None;
-                    } else if let None = state {
-                        if let n @ Some(Selection::Node(_)) = find_selected(&dag, mouse_pos, thingy_size) {
-                            println!("Started writing!");
-                            selected = n;
-                            state = Some(Writing);
-                        }
                     }
                 },
                 KeyboardInput(Pressed, _, Some(Key::Key1)) => {
@@ -211,9 +476,15 @@ fn main() {
                         update_dag(&display, &dag, n);
                     }
                 },
+                MouseWheel(MouseScrollDelta::LineDelta(_, y)) => {
+                    zoom += y * zoom.sqrt();
+                    if zoom < 0.0001 {
+                        zoom = 0.0001;
+                    }
+                },
                 MouseInput(Pressed, Mouse::Middle) => {
                     if let None = state {
-                        if let Some(Selection::Node(n)) = find_selected(&dag, mouse_pos, thingy_size) {
+                        if let Some(Selection::Node(n)) = find_selected(&dag, mouse_pos, (w, h), thingy_size, &fonts, font, zoom) {
                             let children = dag.children(n).map(|(_, n, _)| n).collect::<Vec<_>>();
                             dag.remove_outgoing_edges(n);
                             for c in children {
@@ -226,7 +497,7 @@ fn main() {
                 MouseInput(Pressed, Mouse::Left) => {
                     if let None = state {
                         state = Some(AddingEdge);
-                        match find_selected(&dag, mouse_pos, thingy_size) {
+                        match find_selected(&dag, mouse_pos, (w, h), thingy_size, &fonts, font, zoom) {
                             s @ Some(Selection::Output(..)) => {
                                 selected = s;
                             },
@@ -242,7 +513,7 @@ fn main() {
                 MouseInput(Released, Mouse::Left) => {
                     if let Some(AddingEdge) = state {
                         if let Some(Selection::Output(source, i)) = selected {
-                            if let Some(Selection::Input(target, o)) = find_selected(&dag, mouse_pos, thingy_size) {
+                            if let Some(Selection::Input(target, o)) = find_selected(&dag, mouse_pos, (w, h), thingy_size, &fonts, font, zoom) {
                                 if let Ok(_) = dag.update_edge(source, i, target, o) {
                                     update_dag(&display, &dag, target);
                                 }
@@ -254,8 +525,18 @@ fn main() {
                 },
                 MouseInput(Pressed, Mouse::Right) => {
                     if let None = state {
-                        state = Some(Dragging);
-                        selected = find_selected(&dag, mouse_pos, thingy_size);
+                        match find_selected(&dag, mouse_pos, (w, h), thingy_size, &fonts, font, zoom) {
+                            n @ Some(Selection::Node(_)) => {
+                                selected = n;
+                                state = Some(Dragging);
+                            },
+                            n @ Some(Selection::Setting(..)) => {
+                                selected = n;
+                                state = Some(Writing);
+                                println!("Started writing!");
+                            }
+                            _ => {}
+                        }
                     }
                 },
                 MouseInput(Released, Mouse::Right) => {
@@ -265,25 +546,14 @@ fn main() {
                     }
                 },
                 MouseMoved((x, y)) => {
-                    let (width, height) = display.get_framebuffer_dimensions();
-                    let rel_x = x as f32 / width as f32;
-                    let rel_y = y as f32 / height as f32;
-                    mouse_pos = line_intersects_plane(&camera, &perspective, rel_x, rel_y);
-                    if let Some(Dragging) = state {
-                        if let Some(Selection::Node(o)) = selected {
-                            dag.node_weight_mut(o).unwrap().position = mouse_pos;
-                        }
-                    }
+                    mouse_window_pos = [x, y];
                 }
                 _ => {},
             }
         }
-        camera.position = [0., 0., 5.];
-        let view = camera.orthogonal();
-        camera.position = [0., 0., -5.];
-        let projection = perspective.projection();
+
         let mut target = display.draw();
-        target.clear_color(0.0157, 0.0173, 0.0204, 1.);//0., 0., 0., 1.);
+        target.clear_color(0.0157, 0.0173, 0.0204, 1.);
         let draw_params = DrawParameters {
             blend: Blend {
                 color: Addition {
@@ -301,98 +571,73 @@ fn main() {
         };
         for node in dag.raw_nodes() {
             let node = &node.weight;
-            let x = node.position[0] - 0.5;
-            let y = -node.position[1] - 0.5;
-            //Background of node
-            let mut matrix = [[1., 0., 0., 0.],
-                              [0., 1., 0., 0.],
-                              [0., 0., 1., 0.],
-                              [x , y , 0., 1.]];
-            matrix = model_view_projection(matrix, view, projection);
+            let x = node.position[0];
+            let y = node.position[1];
+            let matrix = translation(x - 0.5, -y - 0.5);
+            let matrix = col_mat4_mul(cam, matrix);
             let program = back_program;
             let uniforms = uniform! {
                 matrix: matrix,
             };
-
             let vertices = &back_model.0;
             let indices = &back_model.1;
-            target.draw(vertices,
-                        indices,
-                        &program,
-                        &uniforms,
-                        &draw_params)
-                  .unwrap();
-            //Node
-            let x = x + 0.05;
-            let y = y + 0.05;
-            let mut matrix = [[1., 0., 0., 0.],
-                              [0., 1., 0., 0.],
-                              [0., 0., 1., 0.],
-                              [x , y , 0., 1.]];
-            matrix = col_mat4_mul(matrix,
+            target.draw(vertices, indices, &program, &uniforms, &draw_params).unwrap();
+            let matrix = translation(x - 0.5 + 0.05, -y - 0.5 + 0.05);
+            let matrix = col_mat4_mul(matrix,
                              [[0.9, 0. , 0., 0.],
                               [0. , 0.9, 0., 0.],
                               [0. , 0. , 1., 0.],
                               [0. , 0. , 0., 1.]]);
-            matrix = model_view_projection(matrix, view, projection);
+            let matrix = col_mat4_mul(cam, matrix);
             let program = node.program.borrow();
             let program = program.as_ref().unwrap();
             let uniforms = uniform! {
                 matrix: matrix,
             };
-
             let vertices = &node_model.0;
             let indices = &node_model.1;
-            target.draw(vertices,
-                        indices,
-                        &program,
-                        &uniforms,
-                        &draw_params)
-                  .unwrap();
+            target.draw(vertices, indices, &program, &uniforms, &draw_params).unwrap();
+            let settings = node.process.borrow().settings();
+            for (i, setting) in settings.iter().enumerate() {
+                let size = 0.1 * zoom;
+                let pos = [x + 0.45, y + 0.5 - ((i + 1) as f32 / (settings.len() + 1) as f32)];
+                let pos = transform(cam, pos);
+                let pos = [pos[0] + 1., -(pos[1] + 1.)];
+                let mut text = setting.clone();
+                text.push_str(": ");
+                text.push_str(&node.process.borrow().setting(i));
+                fonts.draw_text(&display, &mut target, font, size, [0., 0., 0., 1.], pos, &text);
+            }
             for s in 0..node.max_out() {
                 let pos = output_pos(node, s, thingy_size);
                 let x = pos[0] - thingy_size / 2.;
                 let y = pos[1];
-                let mut matrix = [[1., 0., 0., 0.],
-                                  [0., 1., 0., 0.],
-                                  [0., 0., 1., 0.],
-                                  [x , y , 0., 1.]];
-                matrix = col_mat4_mul(matrix, thingy_scale);
-                matrix = model_view_projection(matrix, view, projection);
+                let matrix = translation(x, y);
+                let matrix = col_mat4_mul(matrix, thingy_scale);
+                let matrix = col_mat4_mul(cam, matrix);
                 let uniforms = uniform! {
                     matrix: matrix,
                 };
                 let vertices = &thingy_model.0;
                 let indices = &thingy_model.1;
-                target.draw(vertices,
-                            indices,
-                            &thingy_program,
-                            &uniforms,
-                            &draw_params)
-                      .unwrap();
+                let program = thingy_program;
+                target.draw(vertices, indices, &program, &uniforms, &draw_params).unwrap();
             }
 
             for t in 0..node.max_in() {
                 let pos = input_pos(node, t, thingy_size);
                 let x = pos[0] - thingy_size / 2.;
                 let y = pos[1];
-                let mut matrix = [[1., 0., 0., 0.],
-                                  [0., 1., 0., 0.],
-                                  [0., 0., 1., 0.],
-                                  [x , y , 0., 1.]];
-                matrix = col_mat4_mul(matrix, thingy_scale);
-                matrix = model_view_projection(matrix, view, projection);
+                let matrix = translation(x, y);
+                let matrix = col_mat4_mul(matrix, thingy_scale);
+                let matrix = col_mat4_mul(cam, matrix);
                 let uniforms = uniform! {
                     matrix: matrix,
                 };
                 let vertices = &thingy_model.0;
                 let indices = &thingy_model.1;
-                target.draw(vertices,
-                            indices,
-                            &thingy_program,
-                            &uniforms,
-                            &draw_params)
-                      .unwrap();
+                let program = thingy_program;
+                target.draw(vertices, indices, &program, &uniforms, &draw_params).unwrap();
             }
         }
         let mut lines = Vec::with_capacity(dag.edge_count());
@@ -412,25 +657,39 @@ fn main() {
             let trg = [trg[0], trg[1] + thingy_size];
             add_arrow(&mut lines, src, trg, 0.1, 0.1 * TAU);
         }
-        let vertices = glium::VertexBuffer::new(&display, &lines).unwrap();
+        let vertices = VertexBuffer::new(&display, &lines).unwrap();
         let indices = (0..lines.len() as u32).collect::<Vec<_>>();
         let indices = IndexBuffer::new(&display, PrimitiveType::LinesList, &indices).unwrap();
-        let mut matrix = [[1., 0., 0., 0.],
-                          [0., 1., 0., 0.],
-                          [0., 0., 1., 0.],
-                          [0., 0., 0., 1.]];
-        matrix = model_view_projection(matrix, view, projection);
+        let matrix = translation(0., 0.);
+        let matrix = col_mat4_mul(cam, matrix);
         let uniforms = uniform! {
             matrix: matrix,
         };
-        target.draw(&vertices,
-                    &indices,
-                    &line_program,
-                    &uniforms,
-                    &draw_params)
-              .unwrap();
+        let program = &line_program;
+        target.draw(&vertices, &indices, program, &uniforms, &draw_params).unwrap();
+
+        let pos = [mouse_window_pos[0] as f32 / w as f32 * 2.0, -mouse_window_pos[1] as f32 / h as f32 * 2.0];
+        fonts.draw_text(&display, &mut target, font, 24., [1.; 4], pos, &text);
+
         target.finish().unwrap();
     }
+}
+
+fn transform(matrix: [[f32; 4]; 4], vector: [f32; 2]) -> [f32; 2] {
+    let m = col_mat4_transform(matrix, [vector[0], vector[1], 0., 1.]);
+    [m[0], m[1]]
+}
+
+fn inverse_transform(matrix: [[f32; 4]; 4], vector: [f32; 2]) -> [f32; 2] {
+    let m = col_mat4_transform(mat4_inv(matrix), [vector[0], vector[1], 0., 1.]);
+    [m[0], m[1]]
+}
+
+fn translation(x: f32, y: f32) -> [[f32; 4]; 4] {
+    [[1., 0., 0., 0.],
+     [0., 1., 0., 0.],
+     [0., 0., 1., 0.],
+     [x , y , 0., 1.]]
 }
 
 fn update_dag<F: Facade>(facade: &F, dag: &PortNumbered<Node>, node: NodeIndex) {
@@ -508,7 +767,8 @@ fn add_arrow(lines: &mut Vec<Vertex>, src: [f32; 2], trg: [f32; 2], len: f32, th
     });
 }
 
-fn find_selected(dag: &PortNumbered<Node>, mouse_pos: [f32; 2], size: f32) -> Option<Selection> {
+fn find_selected(dag: &PortNumbered<Node>, mouse_pos: [f32; 2], (w, h): (u32, u32), size: f32, fonts: &Fonts, font: usize, zoom: f32) -> Option<Selection> {
+    let (w, h) = (w as f32, h as f32);
     dag.raw_nodes()
         .iter()
         .enumerate()
@@ -518,6 +778,21 @@ fn find_selected(dag: &PortNumbered<Node>, mouse_pos: [f32; 2], size: f32) -> Op
             if pos[0] - 0.5 < mouse_pos[0] && mouse_pos[0] < pos[0] + 0.5 {
                 if pos[1] - 0.5 < mouse_pos[1] && mouse_pos[1] < pos[1] + 0.5 {
                     return Some(Selection::Node(i));
+                }
+            }
+            let settings = n.weight.process.borrow().settings();
+            for (j, setting) in settings.iter().enumerate() {
+                let pos = [pos[0] + 0.45, pos[1] + 0.5 - ((j + 1) as f32 / (settings.len() + 1) as f32)];
+                let size = 0.1 * zoom;
+                if let Some(bb) = fonts.bounding_box(font, size, setting) {
+                    //TODO: Figure out what should be done here so it works.
+                    let min = 2. * (vector(bb.min.x as f32 / w, -bb.min.y as f32 / h) - vector(0.5, -0.5));
+                    let max = 2. * (vector(bb.max.x as f32 / w, -bb.max.y as f32 / h) - vector(0.5, -0.5));
+                    if min.x + pos[0] < mouse_pos[0] && mouse_pos[0] < max.x + pos[0] {
+                        if min.y + pos[1] < mouse_pos[1] && mouse_pos[1] < max.y + pos[1] {
+                            return Some(Selection::Setting(i, j));
+                        }
+                    }
                 }
             }
             for s in 0..n.weight.max_out() {
@@ -542,53 +817,6 @@ fn find_selected(dag: &PortNumbered<Node>, mouse_pos: [f32; 2], size: f32) -> Op
         })
         .next()
 }
-
-pub fn line_intersects_plane(camera: &Camera,
-                             pers: &CameraPerspective,
-                             rel_x: f32,
-                             rel_y: f32) -> [f32; 2] {
-    let fov_h = pers.fov.to_radians();
-    let fov_v = 2. * f32::atan(f32::tan(fov_h / 2.) * pers.aspect_ratio);
-
-    let near_dist = pers.near_clip;
-
-    let near_width = 2. * near_dist * f32::tan(fov_v / 2.);
-    let near_height = 2. * near_dist * f32::tan(fov_h / 2.);
-
-    let forward = camera.forward.clone();
-    let up = camera.up.clone();
-    let right = camera.right.clone();
-
-    let near_x = near_width * (rel_x - 0.5);
-    let near_y = near_height * (rel_y - 0.5);
-
-    let near_x_coord = vec3_scale(right, near_x as f32);
-    let near_y_coord = vec3_scale(up, near_y as f32);
-    let near_z_coord = vec3_scale(forward, near_dist as f32);
-
-    let ray_dir = vec3_normalized(vec3_add(vec3_add(near_x_coord, near_y_coord), near_z_coord));
-    let ray_orig = camera.position.clone();
-
-    let plane_normal = [0., 0., -1.];
-    let plane_point = [0., 0., 0.];
-
-    let n_dot_e = vec3_dot(ray_dir, plane_normal);
-
-    if n_dot_e == 0. {
-        panic!("Something unexpected happened with targetting. The camera is probably looking \
-                away from game plane.");
-    }
-
-    let distance = vec3_dot(plane_normal, vec3_sub(plane_point, ray_orig)) / n_dot_e;
-
-    if distance >= 0. {
-        let res = vec3_add(ray_orig, vec3_scale(ray_dir, distance));
-        [res[0], res[1]]
-    } else {
-        panic!("Something unexpected happened with targetting.");
-    }
-}
-
 
 fn rounded_rectangle((width, height): (f32, f32), (tlr, trr, blr, brr): (f32, f32, f32, f32)) -> (Vec<Vertex>, Vec<u32>) {
     fn do_corner(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, cur: f32, (x, y): (f32, f32), (a, b, c): (u32, u32, u32), angle: f32) {

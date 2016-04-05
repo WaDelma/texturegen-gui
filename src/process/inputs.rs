@@ -1,7 +1,5 @@
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::any::Any;
-use std::collections::HashMap;
 
 use shader::Context;
 use process::Process;
@@ -19,9 +17,9 @@ impl Constant {
 }
 
 impl Process for Constant {
-    fn modify(&mut self, key: String, value: String) {
-        match &*key {
-            "color" => {
+    fn modify(&mut self, key: usize, value: String) {
+        match key {
+            0 => {
                 let input = value.split("|").collect::<Vec<_>>();
                 self.constant =
                 [input[0].parse().unwrap(),
@@ -32,7 +30,13 @@ impl Process for Constant {
             k => panic!("Unknown option: {}", k),
         }
     }
-    fn options(&self) -> Vec<String> {
+    fn setting(&self, key: usize) -> String {
+        match key {
+            0 => format!("{:?}", self.constant),
+            k => panic!("Unknown option: {}", k),
+        }
+    }
+    fn settings(&self) -> Vec<String> {
         vec!["color".into()]
     }
     fn max_in(&self) -> u32 {0}

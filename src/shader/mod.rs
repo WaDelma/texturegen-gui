@@ -117,13 +117,13 @@ impl Shader {
         let mut fragment = String::new();
         fragment.push_str("#version 140\n");
         fragment.push_str("out vec4 color;\n");
-        fragment.push_str("uniform mat4 matrix;\n");
         fragment.push_str("void main() {\n");
         for snippet in self.fragment_snippets {
             fragment.push_str(&snippet);
         }
         fragment.push_str("}");
         println!("{}", fragment);
+
         Program::from_source(facade, &vertex, &fragment, None).unwrap()
     }
 }

@@ -13,18 +13,21 @@ impl Blend {
 }
 
 impl Process for Blend {
-    fn modify(&mut self, key: String, value: String) {
-        match &*key {
-            "blend" => {
-                self.0 = value.into();
-            },
-            "alpha" => {
-                self.1 = value.into();
-            },
+    fn modify(&mut self, key: usize, value: String) {
+        match key {
+            0 => self.0 = value.into(),
+            1 => self.1 = value.into(),
             k => panic!("Unknown option: {}", k),
         }
     }
-    fn options(&self) -> Vec<String> {
+    fn setting(&self, key: usize) -> String {
+        match key {
+            0 => format!("{:?}", self.0),
+            1 => format!("{:?}", self.1),
+            k => panic!("Unknown option: {}", k),
+        }
+    }
+    fn settings(&self) -> Vec<String> {
         vec!["blend".into(), "alpha".into()]
     }
     fn max_in(&self) -> u32 {2}
