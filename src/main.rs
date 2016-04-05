@@ -430,19 +430,16 @@ fn main() {
                     if let Some(Writing) = state {
                         if !c.is_whitespace() && !c.is_control() {
                             text.push(c);
-                            println!("text: {:?}", text);
                         }
                     }
                 },
                 KeyboardInput(Pressed, _, Some(Key::Back)) => {
                     if let Some(Writing) = state {
                         text.pop();
-                        println!("text: {:?}", text);
                     }
                 },
                 KeyboardInput(Pressed, _, Some(Key::Escape)) => {
                     if let Some(Writing) = state {
-                        println!("Stopped writing!");
                         text.clear();
                         selected = None;
                         state = None;
@@ -451,12 +448,11 @@ fn main() {
                 KeyboardInput(Pressed, _, Some(Key::Return)) => {
                     if let Some(Writing) = state {
                         if let Some(Selection::Setting(n, i)) = selected {
-                            println!("Confirmed writing!");
                             dag.node_weight(n)
                                 .unwrap()
                                 .process
                                 .borrow_mut()
-                                .modify(i, text.clone());
+                                .modify(i, text.to_lowercase());
                             update_dag(&display, &dag, n);
                         }
                         text.clear();
@@ -484,7 +480,7 @@ fn main() {
                 },
                 MouseInput(Pressed, Mouse::Middle) => {
                     if let None = state {
-                        if let Some(Selection::Node(n)) = find_selected(&dag, mouse_pos, (w, h), thingy_size, &fonts, font, zoom) {
+                        if let Some(Selection::Node(n)) = find_selected(&dag, mouse_pos, cam, (w, h), thingy_size, &fonts, font, zoom) {
                             let children = dag.children(n).map(|(_, n, _)| n).collect::<Vec<_>>();
                             dag.remove_outgoing_edges(n);
                             for c in children {
@@ -497,7 +493,7 @@ fn main() {
                 MouseInput(Pressed, Mouse::Left) => {
                     if let None = state {
                         state = Some(AddingEdge);
-                        match find_selected(&dag, mouse_pos, (w, h), thingy_size, &fonts, font, zoom) {
+                        match find_selected(&dag, mouse_pos, cam, (w, h), thingy_size, &fonts, font, zoom) {
                             s @ Some(Selection::Output(..)) => {
                                 selected = s;
                             },
@@ -506,6 +502,11 @@ fn main() {
                                 update_dag(&display, &dag, n);
                                 selected = Some(Selection::Output(s, i));
                             },
+                            n @ Some(Selection::Setting(..)) => {
+                                selected = n;
+                                state = Some(Writing);
+                                println!("Started writing!");
+                            }
                             _ => {}
                         }
                     }
@@ -513,7 +514,7 @@ fn main() {
                 MouseInput(Released, Mouse::Left) => {
                     if let Some(AddingEdge) = state {
                         if let Some(Selection::Output(source, i)) = selected {
-                            if let Some(Selection::Input(target, o)) = find_selected(&dag, mouse_pos, (w, h), thingy_size, &fonts, font, zoom) {
+                            if let Some(Selection::Input(target, o)) = find_selected(&dag, mouse_pos, cam, (w, h), thingy_size, &fonts, font, zoom) {
                                 if let Ok(_) = dag.update_edge(source, i, target, o) {
                                     update_dag(&display, &dag, target);
                                 }
@@ -525,16 +526,11 @@ fn main() {
                 },
                 MouseInput(Pressed, Mouse::Right) => {
                     if let None = state {
-                        match find_selected(&dag, mouse_pos, (w, h), thingy_size, &fonts, font, zoom) {
+                        match find_selected(&dag, mouse_pos, cam, (w, h), thingy_size, &fonts, font, zoom) {
                             n @ Some(Selection::Node(_)) => {
                                 selected = n;
                                 state = Some(Dragging);
                             },
-                            n @ Some(Selection::Setting(..)) => {
-                                selected = n;
-                                state = Some(Writing);
-                                println!("Started writing!");
-                            }
                             _ => {}
                         }
                     }
@@ -569,7 +565,7 @@ fn main() {
             smooth: None,
             ..Default::default()
         };
-        for node in dag.raw_nodes() {
+        for (i, node) in dag.raw_nodes().iter().enumerate() {
             let node = &node.weight;
             let x = node.position[0];
             let y = node.position[1];
@@ -598,15 +594,26 @@ fn main() {
             let indices = &node_model.1;
             target.draw(vertices, indices, &program, &uniforms, &draw_params).unwrap();
             let settings = node.process.borrow().settings();
-            for (i, setting) in settings.iter().enumerate() {
+            for (ii, setting) in settings.iter().enumerate() {
                 let size = 0.1 * zoom;
-                let pos = [x + 0.45, y + 0.5 - ((i + 1) as f32 / (settings.len() + 1) as f32)];
+                let pos = [x + 0.45, y - 0.5 + ((ii + 1) as f32 / (settings.len() + 1) as f32)];
                 let pos = transform(cam, pos);
                 let pos = [pos[0] + 1., -(pos[1] + 1.)];
-                let mut text = setting.clone();
-                text.push_str(": ");
-                text.push_str(&node.process.borrow().setting(i));
-                fonts.draw_text(&display, &mut target, font, size, [0., 0., 0., 1.], pos, &text);
+                let mut string = setting.clone();
+                string.push_str(": ");
+                let mut flag = true;
+                if let Some(Writing) = state {
+                    if let Some(Selection::Setting(n, j)) = selected {
+                        if n.index() == i && ii == j {
+                            string.push_str(&text);
+                            flag = false;
+                        }
+                    }
+                }
+                if flag {
+                    string.push_str(&node.process.borrow().setting(ii));
+                }
+                fonts.draw_text(&display, &mut target, font, size, [0., 0., 0., 1.], pos, &string);
             }
             for s in 0..node.max_out() {
                 let pos = output_pos(node, s, thingy_size);
@@ -667,9 +674,6 @@ fn main() {
         };
         let program = &line_program;
         target.draw(&vertices, &indices, program, &uniforms, &draw_params).unwrap();
-
-        let pos = [mouse_window_pos[0] as f32 / w as f32 * 2.0, -mouse_window_pos[1] as f32 / h as f32 * 2.0];
-        fonts.draw_text(&display, &mut target, font, 24., [1.; 4], pos, &text);
 
         target.finish().unwrap();
     }
@@ -767,7 +771,7 @@ fn add_arrow(lines: &mut Vec<Vertex>, src: [f32; 2], trg: [f32; 2], len: f32, th
     });
 }
 
-fn find_selected(dag: &PortNumbered<Node>, mouse_pos: [f32; 2], (w, h): (u32, u32), size: f32, fonts: &Fonts, font: usize, zoom: f32) -> Option<Selection> {
+fn find_selected(dag: &PortNumbered<Node>, mouse_pos: [f32; 2], cam: [[f32; 4]; 4], (w, h): (u32, u32), size: f32, fonts: &Fonts, font: usize, zoom: f32) -> Option<Selection> {
     let (w, h) = (w as f32, h as f32);
     dag.raw_nodes()
         .iter()
@@ -782,14 +786,22 @@ fn find_selected(dag: &PortNumbered<Node>, mouse_pos: [f32; 2], (w, h): (u32, u3
             }
             let settings = n.weight.process.borrow().settings();
             for (j, setting) in settings.iter().enumerate() {
-                let pos = [pos[0] + 0.45, pos[1] + 0.5 - ((j + 1) as f32 / (settings.len() + 1) as f32)];
+                let pos = [pos[0] + 0.45, pos[1] - 0.5 + ((j + 1) as f32 / (settings.len() + 1) as f32)];
                 let size = 0.1 * zoom;
-                if let Some(bb) = fonts.bounding_box(font, size, setting) {
-                    //TODO: Figure out what should be done here so it works.
-                    let min = 2. * (vector(bb.min.x as f32 / w, -bb.min.y as f32 / h) - vector(0.5, -0.5));
-                    let max = 2. * (vector(bb.max.x as f32 / w, -bb.max.y as f32 / h) - vector(0.5, -0.5));
-                    if min.x + pos[0] < mouse_pos[0] && mouse_pos[0] < max.x + pos[0] {
-                        if min.y + pos[1] < mouse_pos[1] && mouse_pos[1] < max.y + pos[1] {
+                let mut text = setting.clone();
+                text.push_str(": ");
+                text.push_str(&n.weight.process.borrow().setting(j));
+                if let Some(bb) = fonts.bounding_box(font, size, &text) {
+                    let min_x = bb.min.x as f32 / w as f32;
+                    let min_y = bb.min.y as f32 / h as f32;
+                    let max_x = bb.max.x as f32 / w as f32;
+                    let max_y = bb.max.y as f32 / h as f32;
+                    let min = inverse_transform(cam, [min_x, min_y]);
+                    let max = inverse_transform(cam, [max_x, max_y]);
+                    let min = [min[0] * 2., min[1] * 2.];
+                    let max = [max[0] * 2., max[1] * 2.];
+                    if pos[0] + min[0] < mouse_pos[0] && mouse_pos[0] < pos[0] + max[0] {
+                        if pos[1] + min[1] < mouse_pos[1] && mouse_pos[1] < pos[1] + max[1] {
                             return Some(Selection::Setting(i, j));
                         }
                     }

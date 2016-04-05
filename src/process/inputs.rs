@@ -20,12 +20,12 @@ impl Process for Constant {
     fn modify(&mut self, key: usize, value: String) {
         match key {
             0 => {
-                let input = value.split("|").collect::<Vec<_>>();
+                let input = value.split(",").collect::<Vec<_>>();
                 self.constant =
-                [input[0].parse().unwrap(),
-                 input[1].parse().unwrap(),
-                 input[2].parse().unwrap(),
-                 input[3].parse().unwrap()];
+                [input[0].trim().parse().unwrap(),
+                 input[1].trim().parse().unwrap(),
+                 input[2].trim().parse().unwrap(),
+                 input[3].trim().parse().unwrap()];
             },
             k => panic!("Unknown option: {}", k),
         }
