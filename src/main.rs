@@ -25,7 +25,7 @@ use daggy::{Walker, NodeIndex};
 
 use rusttype::FontCollection;
 
-use texturegen::{TextureGenerator};
+use texturegen::{TextureGenerator, Port, port};
 use texturegen::process::{Process, Constant, BlendType};
 use texturegen::process::Blend as BlendProcess;
 
@@ -59,8 +59,8 @@ enum State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Selection {
     Node(NodeIndex),
-    Input(NodeIndex, u32),
-    Output(NodeIndex, u32),
+    Input(Port<u32>),
+    Output(Port<u32>),
     Setting(NodeIndex, usize),
 }
 
@@ -97,11 +97,11 @@ fn main() {
     let mut mouse_window_pos = [0; 2];
 
     let mut gen = TextureGenerator::<Node>::new();
-    gen.register_shader_listener(|gen, node, vertex, fragment, event_type| {
+    gen.register_shader_listener(|gen, node, source, event_type| {
         use texturegen::EventType::*;
         match event_type {
             Added | Changed => {
-                let program = Program::from_source(&display, vertex, fragment, None).expect("Creating generated shader faile.");
+                let program = Program::from_source(&display, &source.vertex, &source.fragment, None).expect("Creating generated shader faile.");
                 *gen.get(node).unwrap().1.shader.borrow_mut() = Some(program);
             },
             _ => {}
@@ -111,14 +111,14 @@ fn main() {
     let n2 = gen.add(Constant::new([0., 1., 0., 1.]), Node::new([0., -2.]));
     let n3 = gen.add(Constant::new([0., 0., 1., 1.]), Node::new([2., -2.]));
     let n4 = gen.add(BlendProcess::new(BlendType::Hard, BlendType::Screen), Node::new([2., 0.]));
-    gen.connect((n1, 0), (n4, 0));
-    gen.connect((n3, 0), (n4, 1));
+    gen.connect(port(n1, 0), port(n4, 0));
+    gen.connect(port(n3, 0), port(n4, 1));
     let n5 = gen.add(BlendProcess::new(BlendType::Soft, BlendType::Normal), Node::new([-2., 0.]));
-    gen.connect((n1, 0), (n5, 0));
-    gen.connect((n2, 0), (n5, 1));
+    gen.connect(port(n1, 0), port(n5, 0));
+    gen.connect(port(n2, 0), port(n5, 1));
     let n6 = gen.add(BlendProcess::new(BlendType::Screen, BlendType::Normal), Node::new([0., 2.]));
-    gen.connect((n4, 0), (n6, 1));
-    gen.connect((n5, 0), (n6, 0));
+    gen.connect(port(n4, 0), port(n6, 1));
+    gen.connect(port(n5, 0), port(n6, 0));
 
     let mut selected = None;
     let mut state = None;
@@ -265,9 +265,9 @@ fn main() {
                                 selected = n;
                                 state = Some(AddingEdge);
                             },
-                            Some(Selection::Input(n, i)) => {
-                                if let Some((s, i)) = gen.disconnect((n, i)) {
-                                    selected = Some(Selection::Output(s, i));
+                            Some(Selection::Input(port)) => {
+                                if let Some(port) = gen.disconnect(port) {
+                                    selected = Some(Selection::Output(port));
                                     state = Some(AddingEdge);
                                 }
                             },
@@ -288,9 +288,9 @@ fn main() {
                             selected = None;
                         },
                         Some(AddingEdge) => {
-                            if let Some(Selection::Output(source, i)) = selected {
-                                if let Some(Selection::Input(target, o)) = find_selected(&gen, mouse_pos, cam, (w, h), thingy_size, &fonts, font, zoom) {
-                                    gen.connect((source, i), (target, o));
+                            if let Some(Selection::Output(src)) = selected {
+                                if let Some(Selection::Input(trg)) = find_selected(&gen, mouse_pos, cam, (w, h), thingy_size, &fonts, font, zoom) {
+                                    gen.connect(src, trg);
                                 }
                             }
                             state = None;
@@ -375,7 +375,7 @@ fn main() {
                 fonts.draw_text(&display, &mut target, font, size, [0., 0., 0., 1.], pos, &string);
             }
             for s in 0..process.borrow().max_out() {
-                let pos = output_pos(&gen, i, s, thingy_size);
+                let pos = output_pos(&gen, port(i, s), thingy_size);
                 let x = pos[0] - thingy_size / 2.;
                 let y = pos[1];
                 let matrix = translation(x, y);
@@ -391,7 +391,7 @@ fn main() {
             }
 
             for t in 0..process.borrow().max_in() {
-                let pos = input_pos(&gen, i, t, thingy_size);
+                let pos = input_pos(&gen, port(i, t), thingy_size);
                 let x = pos[0] - thingy_size / 2.;
                 let y = pos[1];
                 let matrix = translation(x, y);
@@ -408,15 +408,15 @@ fn main() {
         }
         let mut lines = Vec::with_capacity(gen.connections());
         if let Some(AddingEdge) = state {
-            if let Some(Selection::Output(source, s)) = selected {
-                let src = output_pos(&gen, source, s, thingy_size);
+            if let Some(Selection::Output(trg)) = selected {
+                let src = output_pos(&gen, trg, thingy_size);
                 let trg = [mouse_pos[0], -mouse_pos[1]];
                 add_arrow(&mut lines, src, trg, 0.1, 0.1 * TAU);
             }
         }
-        for (source, s, target, t) in gen.iter_connections() {
-            let src = output_pos(&gen, source, s, thingy_size);
-            let trg = input_pos(&gen, target, t, thingy_size);
+        for (src, trg) in gen.iter_connections() {
+            let src = output_pos(&gen, src, thingy_size);
+            let trg = input_pos(&gen, trg, thingy_size);
             let trg = [trg[0], trg[1] + thingy_size];
             add_arrow(&mut lines, src, trg, 0.1, 0.1 * TAU);
         }
@@ -435,19 +435,19 @@ fn main() {
     }
 }
 
-fn input_pos(gen: &TextureGenerator<Node>, node: NodeIndex, port: u32, _size: f32) -> [f32; 2] {
-    let node = gen.get(node).unwrap();
+fn input_pos(gen: &TextureGenerator<Node>, input: Port<u32>, _size: f32) -> [f32; 2] {
+    let node = gen.get(input.node).unwrap();
     let process = node.0.borrow();
     let pos = node.1.pos;
-    [pos[0] - 0.5 + ((port + 1) as f32 / (process.max_in() + 1) as f32),
+    [pos[0] - 0.5 + ((input.port + 1) as f32 / (process.max_in() + 1) as f32),
     -(pos[1] - 0.5)]
 }
 
-fn output_pos(gen: &TextureGenerator<Node>, node: NodeIndex, port: u32, size: f32) -> [f32; 2] {
-    let node = gen.get(node).unwrap();
+fn output_pos(gen: &TextureGenerator<Node>, output: Port<u32>, size: f32) -> [f32; 2] {
+    let node = gen.get(output.node).unwrap();
     let process = node.0.borrow();
     let pos = node.1.pos;
-    [pos[0] - 0.5 + ((port + 1) as f32 / (process.max_out() + 1) as f32),
+    [pos[0] - 0.5 + ((output.port + 1) as f32 / (process.max_out() + 1) as f32),
     -(pos[1] + 0.5 + size)]
 }
 
@@ -511,20 +511,20 @@ fn find_selected(gen: &TextureGenerator<Node>, mouse_pos: [f32; 2], cam: [[f32; 
                 }
             }
             for s in 0..n.borrow().max_out() {
-                let pos = output_pos(&gen, i, s, size);
+                let pos = output_pos(&gen, port(i, s), size);
                 let pos = [pos[0], -pos[1]];
                 if pos[0] - size < mouse_pos[0] && mouse_pos[0] < pos[0] + size {
                     if pos[1] - size < mouse_pos[1] && mouse_pos[1] < pos[1] + size {
-                        return Some(Selection::Output(i, s));
+                        return Some(Selection::Output(port(i, s)));
                     }
                 }
             }
             for t in 0..n.borrow().max_in() {
-                let pos = input_pos(&gen, i, t, size);
+                let pos = input_pos(&gen, port(i, t), size);
                 let pos = [pos[0], -pos[1]];
                 if pos[0] - size < mouse_pos[0] && mouse_pos[0] < pos[0] + size {
                     if pos[1] - size < mouse_pos[1] && mouse_pos[1] < pos[1] + size {
-                        return Some(Selection::Input(i, t));
+                        return Some(Selection::Input(port(i, t)));
                     }
                 }
             }
