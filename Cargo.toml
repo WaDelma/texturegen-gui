@@ -1,13 +1,15 @@
 [package]
-name = "texturegen"
+name = "texturegen-gui"
 version = "0.1.0"
-authors = ["WaDelma <delma@wa>"]
+authors = ["WaDelma <delma@del.ma>"]
 
 [dependencies]
 daggy = "=0.4.0"
 glium = "=0.13.5"
 vecmath = "=0.2.0"
-bit-set = "=0.4.0"
 rusttype = "=0.2.0"
 unicode-normalization = "=0.1.2"
 arrayvec = "=0.3.16"
+
+[dependencies.texturegen]
+git = "https://github.com/WaDelma/texturegen"

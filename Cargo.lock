@@ -1,12 +1,12 @@
 [root]
-name = "texturegen"
+name = "texturegen-gui"
 version = "0.1.0"
 dependencies = [
  "arrayvec 0.3.16 (registry+https://github.com/rust-lang/crates.io-index)",
- "bit-set 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "daggy 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "glium 0.13.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "rusttype 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "texturegen 0.1.0",
  "unicode-normalization 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "vecmath 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -46,19 +46,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "libc 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
-
-[[package]]
-name = "bit-set"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "bit-vec 0.4.3 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "bit-vec"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "bitflags"
@@ -494,6 +481,13 @@ dependencies = [
  "libc 0.2.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.3.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "winapi 0.2.6 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "texturegen"
+version = "0.1.0"
+dependencies = [
+ "daggy 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
