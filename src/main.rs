@@ -161,9 +161,12 @@ fn main() {
         }).unwrap();
     let thingy_program = &line_program;
     let back_program = &line_program;
+    let mut caret = 0;
     let mut zoom = 200.;
     let mut running = true;
+    let mut ticks = 0;
     while running {
+        ticks += 1;
         let (w, h) = display.get_framebuffer_dimensions();
         let cam = [[zoom / w as f32, 0., 0., 0.],
                    [0., zoom / h as f32, 0., 0.],
@@ -189,13 +192,39 @@ fn main() {
                 ReceivedCharacter(c) => {
                     if let Some(Writing) = state {
                         if !c.is_whitespace() && !c.is_control() {
-                            text.push(c);
+                            if caret == text.len() {
+                                text.push(c);
+                            } else {
+                                text.insert(caret + 1, c);
+                            }
+                            if caret < text.len() - 1 {
+                                caret += 1;
+                            }
+                        }
+                    }
+                },
+                KeyboardInput(Pressed, _, Some(Key::Right)) => {
+                    if let Some(Writing) = state {
+                        if caret < text.len() - 1 {
+                            caret += 1;
+                        }
+                    }
+                },
+                KeyboardInput(Pressed, _, Some(Key::Left)) => {
+                    if let Some(Writing) = state {
+                        if caret > 0 {
+                            caret -= 1;
                         }
                     }
                 },
                 KeyboardInput(Pressed, _, Some(Key::Back)) => {
                     if let Some(Writing) = state {
-                        text.pop();
+                        if !text.is_empty() {
+                            text.remove(caret);
+                            if caret > 0 {
+                                caret -= 1;
+                            }
+                        }
                     }
                 },
                 KeyboardInput(Pressed, _, Some(Key::Escape)) => {
@@ -249,7 +278,9 @@ fn main() {
                                 }
                             }
                         }
-                        if !same {
+                        if same {
+                            // TODO: Update caret
+                        } else {
                            text.clear();
                            selected = None;
                            state = None;
@@ -274,6 +305,7 @@ fn main() {
                             Some(Selection::Setting(n, i)) => {
                                 let node = gen.get(n).expect("Selected node didn't exist.");
                                 text = node.0.borrow().setting(i);
+                                caret =  text.len() - 1;
                                 selected = Some(Selection::Setting(n, i));
                                 state = Some(Writing);
                             }
@@ -364,7 +396,17 @@ fn main() {
                 if let Some(Writing) = state {
                     if let Some(Selection::Setting(n, j)) = selected {
                         if n == i && ii == j {
-                            string.push_str(&text);
+                            let ch = if ticks % 120 < 60 {
+                                '|'
+                            } else {
+                                ' '
+                            };
+                            if text.is_empty() {
+                                string.push(ch);
+                            } else {
+                                let (a, b) = text.split_at(caret + 1);
+                                string.push_str(&format!("{}{}{}", a, ch, b));
+                            }
                             flag = false;
                         }
                     }
