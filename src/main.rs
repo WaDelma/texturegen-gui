@@ -6,6 +6,8 @@ extern crate rusttype;
 extern crate arrayvec;
 extern crate unicode_normalization;
 extern crate texturegen;
+extern crate webweaver;
+extern crate nalgebra;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -22,6 +24,7 @@ use glium::draw_parameters::BlendingFunction::*;
 use vecmath::*;
 
 use daggy::{Walker, NodeIndex};
+use daggy::petgraph::EdgeDirection;
 
 use rusttype::FontCollection;
 
@@ -255,6 +258,24 @@ fn main() {
                         state = None;
                     }
                 },
+                KeyboardInput(Pressed, _, Some(Key::Tab)) => {
+                    let layout = webweaver::GraphLayout::layout(gen.graph(), |_, _| 0.5, |from, to| {
+                        let (edge, dir) = gen.graph().find_edge_undirected(from, to).unwrap();
+                        let edge = gen.graph().edge_weight(edge).unwrap();
+                        let pos = if let EdgeDirection::Outgoing = dir {
+                            output_pos(&gen, port(from, edge.source), thingy_size)
+                        } else {
+                            input_pos(&gen, port(to, edge.target), thingy_size)
+                        };
+                        nalgebra::Vec2::new(pos[0], pos[1])
+                    });
+                    for i in 0..gen.graph().node_count() {
+                        let i = NodeIndex::new(i);
+                        let pos: &nalgebra::Vec2<f32> = layout.get(i).unwrap();
+                        // println!("{:?}", pos);
+                        gen.get_mut(i).unwrap().1.pos = *pos.as_ref();
+                    }
+                }
                 KeyboardInput(Pressed, _, Some(Key::Key1)) => {
                     if let None = state {
                         gen.add(Constant::new([1.; 4]), Node::new(mouse_pos));
