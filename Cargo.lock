@@ -6,7 +6,7 @@ dependencies = [
  "daggy 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "glium 0.13.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "rusttype 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "texturegen 0.1.0",
+ "texturegen 0.1.0 (git+https://github.com/WaDelma/texturegen)",
  "unicode-normalization 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "vecmath 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -483,6 +483,7 @@ dependencies = [
 [[package]]
 name = "texturegen"
 version = "0.1.0"
+source = "git+https://github.com/WaDelma/texturegen#bb80a08811e1d04385849ccb60e46b11076a195f"
 dependencies = [
  "daggy 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]

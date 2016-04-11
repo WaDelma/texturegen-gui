@@ -26,7 +26,7 @@ use daggy::{Walker, NodeIndex};
 use rusttype::FontCollection;
 
 use texturegen::{TextureGenerator, Port, port};
-use texturegen::process::{Process, Constant, BlendType};
+use texturegen::process::{Process, Constant, Stripes, BlendType};
 use texturegen::process::Blend as BlendProcess;
 
 use State::*;
@@ -41,13 +41,24 @@ const TAU: f32 = 2. * ::std::f32::consts::PI;
 #[derive(Copy, Clone)]
 pub struct Vertex {
     pub position: [f32; 2],
+    pub tex_coords: [f32; 2],
 }
 
 fn vert(x: f32, y: f32) -> Vertex {
-    Vertex {position: [x, y]}
+    Vertex {
+        position: [x, y],
+        tex_coords: [0., 0.],
+    }
 }
 
-implement_vertex!(Vertex, position);
+fn vertex(x: f32, y: f32, u: f32, v: f32) -> Vertex {
+    Vertex {
+        position: [x, y],
+        tex_coords: [u, v],
+    }
+}
+
+implement_vertex!(Vertex, position, tex_coords);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
@@ -101,7 +112,7 @@ fn main() {
         use texturegen::EventType::*;
         match event_type {
             Added | Changed => {
-                let program = Program::from_source(&display, &source.vertex, &source.fragment, None).expect("Creating generated shader faile.");
+                let program = Program::from_source(&display, &source.vertex, &source.fragment, None).expect("Building generated shader failed");
                 *gen.get(node).unwrap().1.shader.borrow_mut() = Some(program);
             },
             _ => {}
@@ -125,7 +136,7 @@ fn main() {
     let mut text = String::new();
     let node_model = {
         let (vertices, indices) = (
-            [vert(0., 0.), vert(0., 1.), vert(1., 0.), vert(1., 1.)],
+            [vertex(0., 0., 0., 0.), vertex(0., 1., 0., 1.), vertex(1., 0., 1., 0.), vertex(1., 1., 1., 1.)],
             [0u32, 1, 2, 1, 2, 3]);
         (VertexBuffer::new(&display, &vertices).unwrap(),
         IndexBuffer::new(&display, PrimitiveType::TrianglesList, &indices).unwrap())
@@ -252,6 +263,11 @@ fn main() {
                 KeyboardInput(Pressed, _, Some(Key::Key2)) => {
                     if let None = state {
                         gen.add(BlendProcess::new(BlendType::Screen, BlendType::Normal), Node::new(mouse_pos));
+                    }
+                },
+                KeyboardInput(Pressed, _, Some(Key::Key3)) => {
+                    if let None = state {
+                        gen.add(Stripes::new(0.25, 1., [1.; 4], [0., 0., 0., 1.]), Node::new(mouse_pos));
                     }
                 },
                 MouseWheel(MouseScrollDelta::LineDelta(_, y)) => {
@@ -494,34 +510,24 @@ fn output_pos(gen: &TextureGenerator<Node>, output: Port<u32>, size: f32) -> [f3
 }
 
 fn add_arrow(lines: &mut Vec<Vertex>, src: [f32; 2], trg: [f32; 2], len: f32, theta: f32) {
-    lines.push(Vertex {
-        position: src,
-    });
-    lines.push(Vertex {
-        position: trg,
-    });
+    lines.push(vert(src[0], src[1]));
+    lines.push(vert(trg[0], trg[1]));
     let len = [len, len];
     let vec = vec2_normalized_sub(src, trg);
     let cs = theta.cos();
     let sn = theta.sin();
     let arrow = [vec[0] * cs - vec[1] * sn, vec[0] * sn + vec[1] * cs];
-    lines.push(Vertex {
-        position: trg,
-    });
-    lines.push(Vertex {
-        position: vec2_add(trg, vec2_mul(arrow, len)),
-    });
+    lines.push(vert(trg[0], trg[1]));
+    let v = vec2_add(trg, vec2_mul(arrow, len));
+    lines.push(vert(v[0], v[1]));
 
     let vec = vec2_normalized_sub(src, trg);
     let cs = (-theta).cos();
     let sn = (-theta).sin();
     let arrow = [vec[0] * cs - vec[1] * sn, vec[0] * sn + vec[1] * cs];
-    lines.push(Vertex {
-        position: trg,
-    });
-    lines.push(Vertex {
-        position: vec2_add(trg, vec2_mul(arrow, len)),
-    });
+    lines.push(vert(trg[0], trg[1]));
+    let v = vec2_add(trg, vec2_mul(arrow, len));
+    lines.push(vert(v[0], v[1]));
 }
 
 fn find_selected(gen: &TextureGenerator<Node>, mouse_pos: [f32; 2], cam: [[f32; 4]; 4], (w, h): (u32, u32), size: f32, fonts: &Fonts, font: usize, zoom: f32) -> Option<Selection> {
