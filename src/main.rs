@@ -209,9 +209,9 @@ fn main() {
                             if caret == text.len() {
                                 text.push(c);
                             } else {
-                                text.insert(caret + 1, c);
+                                text.insert(caret, c);
                             }
-                            if caret < text.len() - 1 {
+                            if caret < text.len() {
                                 caret += 1;
                             }
                         }
@@ -219,7 +219,7 @@ fn main() {
                 },
                 KeyboardInput(Pressed, _, Some(Key::Right)) => {
                     if let Some(Writing) = state {
-                        if caret < text.len() - 1 {
+                        if caret < text.len() {
                             caret += 1;
                         }
                     }
@@ -233,11 +233,16 @@ fn main() {
                 },
                 KeyboardInput(Pressed, _, Some(Key::Back)) => {
                     if let Some(Writing) = state {
-                        if !text.is_empty() {
+                        if caret > 0 {
+                            text.remove(caret - 1);
+                            caret -= 1;
+                        }
+                    }
+                },
+                KeyboardInput(Pressed, _, Some(Key::Delete)) => {
+                    if let Some(Writing) = state {
+                        if caret < text.len() {
                             text.remove(caret);
-                            if caret > 0 {
-                                caret -= 1;
-                            }
                         }
                     }
                 },
@@ -259,16 +264,19 @@ fn main() {
                     }
                 },
                 KeyboardInput(Pressed, _, Some(Key::Tab)) => {
-                    let layout = webweaver::GraphLayout::layout(gen.graph(), |_, _| 0.5, |from, to| {
-                        let (edge, dir) = gen.graph().find_edge_undirected(from, to).unwrap();
-                        let edge = gen.graph().edge_weight(edge).unwrap();
-                        let pos = if let EdgeDirection::Outgoing = dir {
-                            output_pos(&gen, port(from, edge.source), thingy_size)
-                        } else {
-                            input_pos(&gen, port(to, edge.target), thingy_size)
-                        };
-                        nalgebra::Vec2::new(pos[0], pos[1])
-                    });
+                    let layout = webweaver::GraphLayout::layout(gen.graph(), |n| {
+                            let pos = gen.get(n).unwrap().1.pos;
+                            nalgebra::Vec2::new(pos[0], pos[1])
+                        }, |_, _| 0.5, |from, to| {
+                            let (edge, dir) = gen.graph().find_edge_undirected(from, to).unwrap();
+                            let edge = gen.graph().edge_weight(edge).unwrap();
+                            let pos = if let EdgeDirection::Outgoing = dir {
+                                output_pos(&gen, port(from, edge.source), thingy_size)
+                            } else {
+                                input_pos(&gen, port(to, edge.target), thingy_size)
+                            };
+                            nalgebra::Vec2::new(pos[0], pos[1])
+                        });
                     for i in 0..gen.graph().node_count() {
                         let i = NodeIndex::new(i);
                         let pos: &nalgebra::Vec2<f32> = layout.get(i).unwrap();
@@ -342,7 +350,7 @@ fn main() {
                             Some(Selection::Setting(n, i)) => {
                                 let node = gen.get(n).expect("Selected node didn't exist.");
                                 text = node.0.borrow().setting(i);
-                                caret =  text.len() - 1;
+                                caret = text.len();
                                 selected = Some(Selection::Setting(n, i));
                                 state = Some(Writing);
                             }
@@ -441,7 +449,7 @@ fn main() {
                             if text.is_empty() {
                                 string.push(ch);
                             } else {
-                                let (a, b) = text.split_at(caret + 1);
+                                let (a, b) = text.split_at(caret);
                                 string.push_str(&format!("{}{}{}", a, ch, b));
                             }
                             flag = false;
