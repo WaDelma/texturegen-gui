@@ -264,10 +264,7 @@ fn main() {
                     }
                 },
                 KeyboardInput(Pressed, _, Some(Key::Tab)) => {
-                    let layout = webweaver::GraphLayout::layout(gen.graph(), |n| {
-                            let pos = gen.get(n).unwrap().1.pos;
-                            nalgebra::Vec2::new(pos[0], pos[1])
-                        }, |_, _| 0.5, |from, to| {
+                    let mut layout = webweaver::Layout::layout(gen.graph(), |from, to| {
                             let (edge, dir) = gen.graph().find_edge_undirected(from, to).unwrap();
                             let edge = gen.graph().edge_weight(edge).unwrap();
                             let pos = if let EdgeDirection::Outgoing = dir {
@@ -277,10 +274,17 @@ fn main() {
                             };
                             nalgebra::Vec2::new(pos[0], pos[1])
                         });
+                    layout.move_to_center();
+                    let mut rot = None;
                     for i in 0..gen.graph().node_count() {
                         let i = NodeIndex::new(i);
-                        let pos: &nalgebra::Vec2<f32> = layout.get(i).unwrap();
-                        // println!("{:?}", pos);
+                        let mut pos: nalgebra::Vec2<f32> = *layout.get(i).unwrap();
+                        if rot.is_none() {
+                            rot = Some(nalgebra::rotation_between(&pos, &nalgebra::Vec2::new(1., 0.)));
+                        }
+                        if let Some(ref rot) = rot {
+                            pos = nalgebra::rotate(rot, &pos);
+                        }
                         gen.get_mut(i).unwrap().1.pos = *pos.as_ref();
                     }
                 }
