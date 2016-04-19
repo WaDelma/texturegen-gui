@@ -7,7 +7,6 @@ authors = ["WaDelma <delma@del.ma>"]
 nalgebra = "0.6.*"
 daggy = "=0.4.0"
 glium = "=0.13.5"
-vecmath = "=0.2.0"
 rusttype = "=0.2.0"
 unicode-normalization = "=0.1.2"
 arrayvec = "=0.3.16"

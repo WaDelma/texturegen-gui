@@ -9,7 +9,6 @@ dependencies = [
  "rusttype 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "texturegen 0.1.0 (git+https://github.com/WaDelma/texturegen)",
  "unicode-normalization 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "vecmath 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "webweaver 0.1.0 (git+https://github.com/WaDelma/webweaver)",
 ]
 
@@ -418,11 +417,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "piston-float"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-
-[[package]]
 name = "rand"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -527,14 +521,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "winapi 0.2.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "winapi-build 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "vecmath"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "piston-float 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]

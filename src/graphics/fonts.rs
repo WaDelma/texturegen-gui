@@ -1,9 +1,10 @@
-use vert;
-
 use std::collections::HashMap;
 use std::borrow::Cow;
 use std::i32;
 use std::cmp;
+use std::fs::File;
+use std::path::Path;
+use std::io::Read;
 
 use glium::{self, Frame, VertexBuffer, Blend, Program, Surface};
 use glium::texture::{Texture2d, RawImage2d, MipmapsOption, UncompressedFloatFormat, ClientFormat};
@@ -11,12 +12,14 @@ use glium::backend::glutin_backend::GlutinFacade;
 use glium::index::{NoIndices, PrimitiveType};
 use glium::draw_parameters::DrawParameters;
 use glium::uniforms::{MinifySamplerFilter, MagnifySamplerFilter};
-
-use rusttype::{Font, Scale, Point, point, vector, PositionedGlyph};
+use rusttype::{Font, FontCollection, Scale, Point, point, vector, PositionedGlyph};
 use rusttype::gpu_cache::Cache;
 use rusttype::Rect;
 
 use arrayvec::ArrayVec;
+
+use super::vert;
+use Vect;
 
 pub struct Fonts<'a> {
     dpi_factor: f32,
@@ -24,7 +27,7 @@ pub struct Fonts<'a> {
     cache_tex: Texture2d,
     program: Program,
     program_bg: Program,
-    fonts: HashMap<usize, Font<'a>>,
+    fonts: HashMap<String, (Font<'a>, usize)>,
 }
 
 impl<'a> Fonts<'a> {
@@ -98,15 +101,18 @@ impl<'a> Fonts<'a> {
         }
     }
 
-    pub fn register(&mut self, font: Font<'a>) -> usize {
+    pub fn load<N: Into<String>, P: AsRef<Path>>(&mut self, name: N, path: P) {
+        let mut file = File::open(path).unwrap();
+        let mut buffer = vec![];
+        file.read_to_end(&mut buffer).unwrap();
+        let font = FontCollection::from_bytes(buffer).into_font().unwrap();
         let id = self.fonts.len();
-        self.fonts.insert(id, font);
-        id
+        self.fonts.insert(name.into(), (font, id));
     }
 
-    pub fn bounding_box(&self, font: usize, size: f32, text: &str) -> Option<Rect<i32>> {
-        let font = self.fonts.get(&font).expect(&format!("Font with id {} didn't exist.", font));
-        self.layout(font, Scale::uniform(size * self.dpi_factor), text).1
+    pub fn bounding_box(&self, font: &str, size: f32, text: &str) -> Option<Rect<i32>> {
+        let font = self.fonts.get(font).expect(&format!("Font {} didn't exist.", font));
+        self.layout(&font.0, Scale::uniform(size * self.dpi_factor), text).1
     }
 
     fn layout<'b>(&self, font: &'b Font, scale: Scale, text: &str) -> (Vec<PositionedGlyph<'b>>, Option<Rect<i32>>) {
@@ -114,10 +120,14 @@ impl<'a> Fonts<'a> {
         let mut result = Vec::new();
         let metrics = font.v_metrics(scale);
         let advance_height = metrics.ascent - metrics.descent + metrics.line_gap;
-        let mut caret = point(0.0, metrics.ascent - advance_height / 2.);
+        let mut caret = point(0.0, metrics.ascent);// - advance_height / 2.);
         let mut last_glyph = None;
         for c in text.nfc() {
             if c.is_control() {
+                match c {
+                    '\n' => caret = point(0.0, caret.y + advance_height),
+                    _ => {}
+                }
                 continue;
             }
             let cur = if let Some(g) = font.glyph(c) {
@@ -148,7 +158,7 @@ impl<'a> Fonts<'a> {
         (result, Some(bg))
     }
 
-    pub fn draw_text(&mut self, display: &GlutinFacade, target: &mut Frame, font: usize, size: f32, color: [f32; 4], pos: [f32; 2], text: &str) {
+    pub fn draw_text(&mut self, display: &GlutinFacade, target: &mut Frame, font: &str, size: f32, color: [f32; 4], pos: Vect, text: &str) {
         fn get_rect(min: Point<u32>, tex: &RawImage2d<u8>) -> glium::Rect {
             glium::Rect {
                 left: min.x,
@@ -160,8 +170,8 @@ impl<'a> Fonts<'a> {
         let (w, h) = display.get_framebuffer_dimensions();
         let (w, h) = (w as f32, h as f32);
         let origin = point(pos[0], pos[1]);
-        let font_data = self.fonts.get(&font).expect(&format!("Font with id {} didn't exist.", font));
-        let (glyphs, bg) = self.layout(font_data, Scale::uniform(size * self.dpi_factor), text);
+        let font = self.fonts.get(font).expect(&format!("Font {} didn't exist.", font));
+        let (glyphs, bg) = self.layout(&font.0, Scale::uniform(size * self.dpi_factor), text);
         if let Some(bg) = bg {
             let min = vector(bg.min.x as f32 / w, -bg.min.y as f32 / h) - vector(0.5, -0.5);
             let max = vector(bg.max.x as f32 / w, -bg.max.y as f32 / h) - vector(0.5, -0.5);
@@ -190,7 +200,7 @@ impl<'a> Fonts<'a> {
         }
 
         for glyph in &glyphs {
-            self.cache.queue_glyph(font, glyph.clone());
+            self.cache.queue_glyph(font.1, glyph.clone());
         }
         let cache_tex = &self.cache_tex;
         self.cache.cache_queued(|rect, data| {
@@ -222,7 +232,7 @@ impl<'a> Fonts<'a> {
             }
             implement_vertex!(Vertex, position, tex_coords);
             let vertices = glyphs.iter().flat_map(|g| {
-                if let Ok(Some((uv, screen))) = self.cache.rect_for(font, g) {
+                if let Ok(Some((uv, screen))) = self.cache.rect_for(font.1, g) {
                     let min = vector(screen.min.x as f32 / w, -screen.min.y as f32 / h) - vector(0.5, -0.5);
                     let max = vector(screen.max.x as f32 / w, -screen.max.y as f32 / h) - vector(0.5, -0.5);
                     let pos = Rect {

@@ -1,41 +1,59 @@
-use vecmath::*;
+use {Vect, Mat};
 
-pub fn from_window_to_screen((w, h): (u32, u32), pos: [i32; 2]) -> [f32; 2] {
-    [pos[0] as f32 / w as f32,
-     pos[1] as f32 / h as f32]
+use nalgebra::{Vec4, Inv};
+
+pub const TAU: f32 = 2. * ::std::f32::consts::PI;
+
+pub fn flip_y(v: Vect) -> Vect {
+    Vect::new(v.x, -v.y)
 }
 
-pub fn from_screen_to_world(cam: [[f32; 4]; 4], pos: [f32; 2]) -> [f32; 2] {
-    // let pos = [pos[0] - 0.5, pos[1] - 0.5];
+pub fn from_window_to_screen((w, h): (u32, u32), pos: [i32; 2]) -> Vect {
+    Vect::new(pos[0] as f32 / w as f32, pos[1] as f32 / h as f32)
+}
+
+pub fn from_screen_to_world(cam: Mat, pos: Vect) -> Vect {
     let pos = inverse_transform(cam, pos);
-    [pos[0] * 2., pos[1] * 2.]
+    pos * 2.
 }
 
-pub fn from_world_to_screen(cam: [[f32; 4]; 4], pos: [f32; 2]) -> [f32; 2] {
+pub fn from_world_to_screen(cam: Mat, pos: Vect) -> Vect {
     let pos = transform(cam, pos);
-    [pos[0] + 1., -(pos[1] + 1.)]
+    Vect::new(pos.x + 1., -(pos.y + 1.))
 }
 
-pub fn transform(matrix: [[f32; 4]; 4], vector: [f32; 2]) -> [f32; 2] {
-    let m = col_mat4_transform(matrix, [vector[0], vector[1], 0., 1.]);
-    [m[0], m[1]]
+pub fn transform(matrix: Mat, vector: Vect) -> Vect {
+    let vector = Vec4::new(vector.x, vector.y, 0., 1.);
+    let vector = vector * matrix;
+    Vect::new(vector.x, vector.y)
 }
 
-pub fn inverse_transform(matrix: [[f32; 4]; 4], vector: [f32; 2]) -> [f32; 2] {
-    let m = col_mat4_transform(mat4_inv(matrix), [vector[0], vector[1], 0., 1.]);
-    [m[0], m[1]]
+pub fn inverse_transform(matrix: Mat, vector: Vect) -> Vect {
+    let vector = Vec4::new(vector.x, vector.y, 0., 1.);
+    let vector = vector * matrix.inv().unwrap();
+    Vect::new(vector.x, vector.y)
 }
 
-pub fn scale(x: f32, y: f32) -> [[f32; 4]; 4] {
-    [[x , 0., 0., 0.],
-     [0., y , 0., 0.],
-     [0., 0., 1., 0.],
-     [0., 0., 0., 1.]]
+pub fn scale(x: f32, y: f32) -> Mat {
+    matrix(
+        [[x , 0., 0., 0.],
+         [0., y , 0., 0.],
+         [0., 0., 1., 0.],
+         [0., 0., 0., 1.]]
+    )
 }
 
-pub fn translation(x: f32, y: f32) -> [[f32; 4]; 4] {
-    [[1., 0., 0., 0.],
-     [0., 1., 0., 0.],
-     [0., 0., 1., 0.],
-     [x , y , 0., 1.]]
+pub fn translation(x: f32, y: f32) -> Mat {
+    matrix(
+        [[1., 0., 0., 0.],
+         [0., 1., 0., 0.],
+         [0., 0., 1., 0.],
+         [x , y , 0., 1.]]
+    )
+}
+
+pub fn matrix(matrix: [[f32; 4]; 4]) -> Mat {
+    let matrix = &matrix;
+    let matrix: &Mat = matrix.into();
+    matrix.clone()
 }
