@@ -1,17 +1,13 @@
-use std::iter::repeat;
-
-use glium::{VertexBuffer, Blend, Surface};
+use glium::{Frame, VertexBuffer, Blend, Surface};
 use glium::backend::glutin_backend::GlutinFacade;
 use glium::index::{IndexBuffer, PrimitiveType};
 use glium::draw_parameters::{DrawParameters};
 use glium::draw_parameters::LinearBlendingFactor::*;
 use glium::draw_parameters::BlendingFunction::*;
+use glium::uniforms::{Uniforms, UniformsStorage, AsUniformValue};
 
 use nalgebra::Norm;
-
-use daggy::{Walker, NodeIndex};
-
-use texturegen::{TextureGenerator, port};
+use texturegen::GeneratorView;
 use texturegen::process::{Process, Setting, BlendType};
 
 use {SimContext, Selection, Node, Vect, input_pos, output_pos};
@@ -19,7 +15,7 @@ use super::{RenderContext, Vertex, vert};
 use State::*;
 use math::*;
 
-pub fn render(display: &GlutinFacade, rctx: &mut RenderContext, gen: &TextureGenerator<Node>, ctx: &SimContext) {
+pub fn render(display: &GlutinFacade, rctx: &mut RenderContext, gen: GeneratorView<Node>, ctx: &SimContext) {
     let mut target = display.draw();
     target.clear_color(0.0157, 0.0173, 0.0204, 1.);
     let draw_params = DrawParameters {
@@ -38,35 +34,31 @@ pub fn render(display: &GlutinFacade, rctx: &mut RenderContext, gen: &TextureGen
         ..Default::default()
     };
     let dims = display.get_framebuffer_dimensions();
-    for (process, data) in gen.iter() {
+    for (_, data) in gen.iter() {
         let pos = flip_y(data.pos);
         let corner_pos = pos - Vect::new(ctx.node_width, ctx.node_width) * 0.5;
         let matrix = rctx.cam * translation(corner_pos.x, corner_pos.y);
         let uniforms = uniform! {
             matrix: *matrix.as_ref(),
         };
-        let model = rctx.models.get("back").unwrap();
-        let program = rctx.programs.get("plain").unwrap();
-        target.draw(&model.vertices, &model.indices, program, &uniforms, &draw_params).expect("Drawing background failed.");
+        draw(&mut target, &rctx, "back", "plain", &uniforms, &draw_params);
         let matrix = rctx.cam * translation(corner_pos.x + 0.05, corner_pos.y + 0.05) * scale(0.9, 0.9);
         let program = data.shader.borrow();
+        let program = program.as_ref().expect("Node didn't have shader.");
         let uniforms = uniform! {
             matrix: *matrix.as_ref(),
         };
         let model = rctx.models.get("node").unwrap();
-        let program = program.as_ref().expect("Node didn't have shader.");
         target.draw(&model.vertices, &model.indices, &program, &uniforms, &draw_params).expect("Drawing node failed.");
 
         let mut draw = |things: &[_]| {
-            for p in things.iter() {
+            for p in things {
                 let p = pos + flip_y(*p) - Vect::new(ctx.thingy_size, ctx.thingy_size) * 0.5;
                 let matrix = rctx.cam * translation(p.x, p.y) * scale(ctx.thingy_size, ctx.thingy_size);
                 let uniforms = uniform! {
                     matrix: *matrix.as_ref(),
                 };
-                let model = rctx.models.get("node").unwrap();
-                let program = rctx.programs.get("plain").unwrap();
-                target.draw(&model.vertices, &model.indices, program, &uniforms, &draw_params).unwrap();
+                draw(&mut target, &rctx, "node", "plain", &uniforms, &draw_params);
             }
         };
         draw(&data.outputs.borrow());
@@ -103,34 +95,38 @@ pub fn render(display: &GlutinFacade, rctx: &mut RenderContext, gen: &TextureGen
             } else {
                 None
             };
-            let process = gen.get(node).expect("Selection should always point to real node.").0;
-            let mut settings = process.borrow_mut();
-            let settings = settings.settings();
+            let node = gen.get(node).expect("Selection should always point to real node.").0;
+            let settings = node.settings();
             let size = 23.;
             for (i, setting) in settings.iter().enumerate() {
                 if set == Some(i) {
                     continue;
                 }
                 let pos = Vect::new(0., -(i as f32) / 20.);
-                let mut string = setting.0.clone();
+                let mut string = setting.to_string();
                 string.push_str(": ");
-                string.push_str(&setting.1.to_string());
+                string.push_str(&node.setting(setting).to_string());
                 rctx.fonts.draw_text(&display, &mut target, "anka", size, [0., 0., 0., 1.], pos, &string);
             }
             if let Some(i) = set {
-                let setting = &settings[i];
                 let pos = Vect::new(0., -(i as f32) / 20.);
-                let mut string = setting.0.clone();
+                let mut string = settings[i].to_string();
                 string.push_str(": ");
-                match setting.1 {
+                match node.setting(settings[i]) {
                     Setting::Blend(ref b) => {
                         let bb = rctx.fonts.bounding_box("anka", size, &string).unwrap();
                         let max = from_screen_to_world(rctx.cam, from_window_to_screen(dims, [bb.max.x, bb.max.y]));
                         string.push_str(&format!("{:?}", b));
                         let pos = pos + Vect::new(max.x - 0.5, -1. / 20.);
-                        for (i, blend) in BlendType::iter_variant_names().enumerate() {
+                        let mut i = 0;
+                        for blend in BlendType::iter_variants() {
+                            if blend == **b {
+                                continue;
+                            }
+                            let blend = format!("{:?}", blend);
                             let pos = pos + Vect::new(0., -(i as f32 / 20.));
                             rctx.fonts.draw_text(&display, &mut target, "anka", size, [0., 0., 0., 1.], pos, &blend);
+                            i += 1;
                         }
                     },
                     _ => {
@@ -154,6 +150,15 @@ pub fn render(display: &GlutinFacade, rctx: &mut RenderContext, gen: &TextureGen
         }
     }
     target.finish().unwrap();
+}
+
+fn draw<A, B>(target: &mut Frame, rctx: &RenderContext, model: &str, program: &str, uniforms: &UniformsStorage<A, B>, draw_params: &DrawParameters)
+    where A: AsUniformValue,
+          B: Uniforms,
+{
+    let model = rctx.models.get(model).unwrap();
+    let program = rctx.programs.get(program).unwrap();
+    target.draw(&model.vertices, &model.indices, program, uniforms, draw_params).unwrap();
 }
 
 fn add_arrow(lines: &mut Vec<Vertex>, src: Vect, trg: Vect, len: f32, theta: f32) {

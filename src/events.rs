@@ -1,3 +1,5 @@
+use std::num::ParseFloatError;
+
 use glium::backend::glutin_backend::GlutinFacade;
 
 use webweaver::Layout;
@@ -7,8 +9,8 @@ use nalgebra::{rotate, rotation_between};
 use daggy::{Walker, NodeIndex};
 use daggy::petgraph::EdgeDirection;
 
-use texturegen::{TextureGenerator, port};
-use texturegen::process::{Process, Constant, Stripes, BlendType, EdgeDetect, EdgeDetectType, Setting};
+use texturegen::{Generator, port};
+use texturegen::process::{Process, Constant, Stripes, BlendType, EdgeDetect, EdgeDetectType, Setting, SettingMut};
 use texturegen::process::Blend as BlendProcess;
 
 use {SimContext, Selection, Node, Vect, input_pos, output_pos};
@@ -16,7 +18,7 @@ use graphics::RenderContext;
 use State::*;
 use math::*;
 
-pub fn handle(display: &GlutinFacade, rctx: &RenderContext, gen: &mut TextureGenerator<Node>, ctx: &mut SimContext) {
+pub fn handle(display: &GlutinFacade, rctx: &RenderContext, gen: &mut Generator<Node>, ctx: &mut SimContext) {
     use glium::glutin::Event::*;
     use glium::glutin::ElementState::*;
     use glium::glutin::MouseButton as Mouse;
@@ -75,31 +77,47 @@ pub fn handle(display: &GlutinFacade, rctx: &RenderContext, gen: &mut TextureGen
                 }
             },
             KeyboardInput(Pressed, _, Some(Key::Return)) => {
+                use texturegen::process::SettingMut::*;
                 if let Some(Writing) = ctx.state {
-                    if let Some(Selection::Setting(n, i)) = ctx.selected {
-                        let n = gen.get_mut(n).unwrap().0;
-                        let mut n = n.borrow_mut();
-                        if let Setting::Text(ref mut t) = n.settings()[i].1 {
-                            **t = ctx.text.to_lowercase();
+                    if let Some(selected) = ctx.selected {
+                        if let Selection::Setting(n, i) = selected {
+                            let (n, _) = gen.get_mut(n).unwrap();
+                            let setting = n.settings()[i];
+                            match n.setting_mut(setting) {
+                                Text(t) => {
+                                    *t = ctx.text.to_lowercase();
+                                },
+                                Integer(i) => {
+                                    if let Ok(ii) = ctx.text.parse() {
+                                        *i = ii;
+                                    }
+                                }
+                                Color(c) => {
+                                    if let Ok(col) = decode_color(&ctx.text) {
+                                        *c = col;
+                                    }
+                                },
+                                _ => {}
+                            }
                         }
-                        // gen.modify(n, i, ctx.text.to_lowercase());
+                        ctx.text.clear();
+                        ctx.state = None;
+                        if let Some(n) = selected.node() {
+                            ctx.selected = Some(Selection::Node(n));
+                        }
                     }
-                    ctx.text.clear();
-                    ctx.state = None;
                 }
             },
             KeyboardInput(Pressed, _, Some(Key::Tab)) => {
-                let mut layout = Layout::layout(gen.graph(), |from, to| {
-                        let (edge, dir) = gen.graph().find_edge_undirected(from, to).unwrap();
-                        let edge = gen.graph().edge_weight(edge).unwrap();
-                        let pos = if let EdgeDirection::Outgoing = dir {
-                            output_pos(&gen, port(from, edge.source), ctx.thingy_size)
-                        } else {
-                            input_pos(&gen, port(to, edge.target), ctx.thingy_size)
-                        };
-                        Vect::new(pos[0], pos[1])
-                    });
-                layout.move_to_center();
+                let layout = Layout::layout(gen.graph(), |from, to| {
+                    let (edge, dir) = gen.graph().find_edge_undirected(from, to).unwrap();
+                    let edge = gen.graph().edge_weight(edge).unwrap();
+                    if let EdgeDirection::Outgoing = dir {
+                        output_pos(&gen, port(from, edge.source), ctx.thingy_size)
+                    } else {
+                        input_pos(&gen, port(to, edge.target), ctx.thingy_size)
+                    }
+                });
                 let mut rot = None;
                 for i in 0..gen.graph().node_count() {
                     let i = NodeIndex::new(i);
@@ -112,7 +130,7 @@ pub fn handle(display: &GlutinFacade, rctx: &RenderContext, gen: &mut TextureGen
                     }
                     gen.get_mut(i).unwrap().1.pos = pos;
                 }
-            }
+            },
             KeyboardInput(Pressed, _, Some(Key::Key1)) => {
                 if let None = ctx.state {
                     let node = gen.add(Constant::new([1.; 4]), Node::new(ctx.mouse_pos));
@@ -154,19 +172,24 @@ pub fn handle(display: &GlutinFacade, rctx: &RenderContext, gen: &mut TextureGen
             MouseInput(Pressed, Mouse::Left) => {
                 let new_selected = find_selected(display, &rctx, &gen, &ctx);
                 if let Some(Writing) = ctx.state {
-                    let mut same = false;
-                    if let Some(Selection::Setting(n, i)) = ctx.selected {
-                        if let Some(Selection::Setting(m, j)) = new_selected {
-                            if n == m && i == j {
-                                same = true;
+                    if let Some(selected) = ctx.selected {
+                        let mut same = false;
+                        if let Selection::Setting(n, i) = selected {
+                            if let Some(Selection::Setting(m, j)) = new_selected {
+                                if n == m && i == j {
+                                    same = true;
+                                }
                             }
                         }
-                    }
-                    if same {
-                        // TODO: Update caret
-                    } else {
-                       ctx.text.clear();
-                       ctx.state = None;
+                        if same {
+                            // TODO: Update caret
+                        } else {
+                           ctx.text.clear();
+                           ctx.state = None;
+                           if let Some(n) = selected.node() {
+                               ctx.selected = Some(Selection::Node(n));
+                           }
+                        }
                     }
                 }
                 if let None = ctx.state {
@@ -186,17 +209,17 @@ pub fn handle(display: &GlutinFacade, rctx: &RenderContext, gen: &mut TextureGen
                             }
                         },
                         Some(Selection::Setting(n, i)) => {
-                            let node = gen.get(n).expect("Selected node didn't exist.");
-                            ctx.text = node.0.borrow_mut().settings()[i].1.to_string();
+                            let (node, _) = gen.get(n).expect("Selected node didn't exist.");
+                            ctx.text = node.setting(node.settings()[i]).to_string();
                             ctx.caret = ctx.text.len();
                             ctx.selected = Some(Selection::Setting(n, i));
                             ctx.state = Some(Writing);
                         },
                         Some(Selection::Choice(n, i, j)) => {
-                            let node = gen.get(n).expect("Selected node didn't exist.").0;
-                            let mut node = node.borrow_mut();
-                            if let Setting::Blend(ref mut t) = node.settings()[i].1 {
-                                **t = BlendType::iter_variants().skip(j).next().unwrap();
+                            let (mut node, _) = gen.get_mut(n).expect("Selected node didn't exist.");
+                            let setting = node.settings()[i];
+                            if let SettingMut::Blend(t) = node.setting_mut(setting) {
+                                *t = BlendType::iter_variants().skip(j).next().unwrap();
                             }
                             ctx.selected = Some(Selection::Node(n));
                         },
@@ -228,39 +251,65 @@ pub fn handle(display: &GlutinFacade, rctx: &RenderContext, gen: &mut TextureGen
     }
 }
 
+enum DecodeError {
+    ParseFloatError(ParseFloatError),
+    TooManyComponents,
+}
+
+impl From<ParseFloatError> for DecodeError {
+    fn from(err: ParseFloatError) -> Self {
+        DecodeError::ParseFloatError(err)
+    }
+}
+
+fn decode_color(s: &str) -> Result<[f32; 4], DecodeError> {
+    let input = s.split(",").collect::<Vec<_>>();
+    if input.len() < 4 {
+        return Err(DecodeError::TooManyComponents);
+    }
+    Ok([try!(input[0].trim().parse()),
+        try!(input[1].trim().parse()),
+        try!(input[2].trim().parse()),
+        try!(input[3].trim().parse())])
+}
+
 // TODO: Get rid of these magic numbers aka understand why you need them.
-fn find_selected(display: &GlutinFacade, rctx: &RenderContext, gen: &TextureGenerator<Node>, ctx: &SimContext) -> Option<Selection> {
+fn find_selected(display: &GlutinFacade, rctx: &RenderContext, gen: &Generator<Node>, ctx: &SimContext) -> Option<Selection> {
     let dims = display.get_framebuffer_dimensions();
     let mouse_pos = ctx.mouse_pos;
     if let Some(s) = ctx.selected {
         if let Some(i) = s.node() {
             let n = gen.get(i).unwrap().0;
-            let mut n = n.borrow_mut();
             let settings = n.settings();
             let size = 23.;
 
             if let Selection::Setting(_, j) = s {
-                let setting = &settings[j];
                 let pos = Vect::new(-0.5, -0.5 + (j as f32) / 20. * 0.5);
-                let mut string = setting.0.clone();
+                let mut string = settings[j].to_string();
                 string.push_str(": ");
-                match setting.1 {
+                match n.setting(settings[j]) {
                     Setting::Blend(ref b) => {
                         let bb = rctx.fonts.bounding_box("anka", size, &string).unwrap();
                         let max = from_window_to_screen(dims, [bb.max.x, bb.max.y]);
                         let pos = pos + Vect::new(max.x * 1.25, 1. / 20. * 0.5);
-                        for (ii, blend) in BlendType::iter_variant_names().enumerate() {
+                        let mut ii = 0;
+                        for (choice, blend) in BlendType::iter_variants().enumerate() {
+                            if blend == **b {
+                                continue;
+                            }
+                            let blend = format!("{:?}", blend);
                             let pos = pos + Vect::new(0., (ii as f32 / 20.) * 0.5);
                             let pos = from_screen_to_world(rctx.cam, pos);
                             if let Some(bb) = rctx.fonts.bounding_box("anka", size, &blend) {
                                 let min = from_screen_to_world(rctx.cam, from_window_to_screen(dims, [bb.min.x, bb.min.y]));
                                 let max = from_screen_to_world(rctx.cam, from_window_to_screen(dims, [bb.max.x, bb.max.y]));
-                                if pos[0] + min[0] < mouse_pos[0] && mouse_pos[0] < pos[0] + max[0] {
-                                    if pos[1] + min[1] < mouse_pos[1] && mouse_pos[1] < pos[1] + max[1] {
-                                        return Some(Selection::Choice(i, j, ii));
+                                if pos.x + min.x < mouse_pos.x && mouse_pos.x < pos.x + max.x {
+                                    if pos.y + min.y < mouse_pos.y && mouse_pos.y < pos.y + max.y {
+                                        return Some(Selection::Choice(i, j, choice));
                                     }
                                 }
                             }
+                            ii += 1;
                         }
                     },
                     _ => {}
@@ -270,14 +319,14 @@ fn find_selected(display: &GlutinFacade, rctx: &RenderContext, gen: &TextureGene
             for (j, setting) in settings.iter().enumerate() {
                 let pos = Vect::new(-0.5, -0.5 + (j as f32) / 20. * 0.5);
                 let pos = from_screen_to_world(rctx.cam, pos);
-                let mut text = setting.0.clone();
+                let mut text = setting.to_string();
                 text.push_str(": ");
-                text.push_str(&setting.1.to_string());
+                text.push_str(&n.setting(setting).to_string());
                 if let Some(bb) = rctx.fonts.bounding_box("anka", size, &text) {
                     let min = from_screen_to_world(rctx.cam, from_window_to_screen(dims, [bb.min.x, bb.min.y]));
                     let max = from_screen_to_world(rctx.cam, from_window_to_screen(dims, [bb.max.x, bb.max.y]));
-                    if pos[0] + min[0] < mouse_pos[0] && mouse_pos[0] < pos[0] + max[0] {
-                        if pos[1] + min[1] < mouse_pos[1] && mouse_pos[1] < pos[1] + max[1] {
+                    if pos.x + min.x < mouse_pos.x && mouse_pos.x < pos.x + max.x {
+                        if pos.y + min.y < mouse_pos.y && mouse_pos.y < pos.y + max.y {
                             return Some(Selection::Setting(i, j));
                         }
                     }
@@ -287,8 +336,8 @@ fn find_selected(display: &GlutinFacade, rctx: &RenderContext, gen: &TextureGene
     }
     gen.iter()
         .enumerate()
-        .map(|(i, (n, d))| (NodeIndex::new(i), (n, d)))
-        .filter_map(|(i, (n, d))| {
+        .map(|(i, (_, d))| (NodeIndex::new(i), d))
+        .filter_map(|(i, d)| {
             if is_inside_square(mouse_pos, d.pos, ctx.node_width) {
                 return Some(Selection::Node(i));
             }

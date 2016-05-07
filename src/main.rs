@@ -15,7 +15,7 @@ use glium::glutin::WindowBuilder;
 
 use daggy::NodeIndex;
 
-use texturegen::{TextureGenerator, Port, port};
+use texturegen::{Generator, Port, port};
 use texturegen::process::{Process, Stripes, BlendType};
 use texturegen::process::Blend as BlendProcess;
 
@@ -115,34 +115,7 @@ fn main() {
         .unwrap();
     let mut rctx = RenderContext::new(&display);
     let mut ctx = SimContext::new();
-    let size = ctx.thingy_size;
-    let node_width = ctx.node_width;
-    let mut gen = TextureGenerator::<Node>::new();
-    gen.register_shader_listener(|gen, node, source, event_type| {
-        use texturegen::EventType::*;
-        match event_type {
-            Added | Changed => {
-                let n = gen.get(node).unwrap();
-                let half_node = node_width / 2.;
-                let update = |things: &mut Vec<_>, amount, dir| {
-                    things.clear();
-                    for i in 0..amount {
-                        let percent = (i + 1) as f32 / (amount + 1) as f32;
-                        things.push(Vect::new(
-                            -half_node + percent * node_width,
-                            dir * (half_node + size / 2.)));
-                    }
-                };
-                update(&mut n.1.inputs.borrow_mut(), n.0.borrow().max_in(), -1.);
-                update(&mut n.1.outputs.borrow_mut(), n.0.borrow().max_out(), 1.);
-
-                let program = Program::from_source(&display, &source.vertex, &source.fragment, None)
-                    .expect("Building generated shader failed");
-                *n.1.shader.borrow_mut() = Some(program);
-            },
-            _ => {}
-        }
-    });
+    let mut gen = Generator::new();
     construct_example_texture(&mut gen);
     while ctx.running {
         let dims = display.get_framebuffer_dimensions();
@@ -164,11 +137,29 @@ fn main() {
         }
 
         events::handle(&display, &rctx, &mut gen, &mut ctx);
-        graphics::renderer::render(&display, &mut rctx, &gen, &ctx);
+        let gen = gen.view(|source, data, process| {
+            let half_node = ctx.node_width / 2.;
+            let update = |things: &mut Vec<_>, amount, dir| {
+                things.clear();
+                for i in 0..amount {
+                    let percent = (i + 1) as f32 / (amount + 1) as f32;
+                    things.push(Vect::new(
+                        -half_node + percent * ctx.node_width,
+                        dir * (half_node + ctx.thingy_size / 2.)));
+                }
+            };
+            update(&mut data.inputs.borrow_mut(), process.max_in(), -1.);
+            update(&mut data.outputs.borrow_mut(), process.max_out(), 1.);
+
+            let program = Program::from_source(&display, &source.vertex, &source.fragment, None)
+                .expect("Building generated shader failed");
+            *data.shader.borrow_mut() = Some(program);
+        });
+        graphics::renderer::render(&display, &mut rctx, gen, &ctx);
     }
 }
 
-fn construct_example_texture(gen: &mut TextureGenerator<Node>) {
+fn construct_example_texture(gen: &mut Generator<Node>) {
     let n1 = gen.add(Stripes::new(8, 1, [1., 0.5, 0., 1.], [0.5, 0.0, 0.5, 1.]), Node::new(Vect::new(-2., -2.)));
     let n2 = gen.add(Stripes::new(1, 4, [0., 0.5, 1., 1.], [0.0, 0.33, 0.0, 1.]), Node::new(Vect::new(0., -2.)));
     let n3 = gen.add(Stripes::new(16, 16, [0.1, 0.1, 0.2, 1.], [0.8, 0.9, 0.9, 1.]), Node::new(Vect::new(2., -2.)));
@@ -183,18 +174,16 @@ fn construct_example_texture(gen: &mut TextureGenerator<Node>) {
     gen.connect(port(n5, 0), port(n6, 0));
 }
 
-fn input_pos(gen: &TextureGenerator<Node>, input: Port<u32>, _size: f32) -> Vect {
+fn input_pos(gen: &Generator<Node>, input: Port<u32>, _size: f32) -> Vect {
     let node = gen.get(input.node).unwrap();
-    let process = node.0.borrow();
     let pos = node.1.pos;
-    let percent = (input.port + 1) as f32 / (process.max_in() + 1) as f32;
+    let percent = (input.port + 1) as f32 / (node.0.max_in() + 1) as f32;
     Vect::new(pos[0] - 0.5 + percent, -(pos[1] - 0.5))
 }
 
-fn output_pos(gen: &TextureGenerator<Node>, output: Port<u32>, size: f32) -> Vect {
+fn output_pos(gen: &Generator<Node>, output: Port<u32>, size: f32) -> Vect {
     let node = gen.get(output.node).unwrap();
-    let process = node.0.borrow();
     let pos = node.1.pos;
-    let percent = (output.port + 1) as f32 / (process.max_out() + 1) as f32;
+    let percent = (output.port + 1) as f32 / (node.0.max_out() + 1) as f32;
     Vect::new(pos[0] - 0.5 + percent, -(pos[1] + 0.5 + size))
 }
