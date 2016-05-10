@@ -6,9 +6,8 @@ use std::fs::File;
 use std::path::Path;
 use std::io::Read;
 
-use glium::{self, Frame, VertexBuffer, Blend, Program, Surface};
+use glium::{self, Frame, VertexBuffer, Blend, Program, Surface, Display};
 use glium::texture::{Texture2d, RawImage2d, MipmapsOption, UncompressedFloatFormat, ClientFormat};
-use glium::backend::glutin_backend::GlutinFacade;
 use glium::index::{NoIndices, PrimitiveType};
 use glium::draw_parameters::DrawParameters;
 use glium::uniforms::{MinifySamplerFilter, MagnifySamplerFilter};
@@ -31,7 +30,7 @@ pub struct Fonts<'a> {
 }
 
 impl<'a> Fonts<'a> {
-    pub fn new(display: &GlutinFacade) -> Fonts {
+    pub fn new(display: &Display) -> Fonts {
         let dpi_factor = display.get_window().unwrap().hidpi_factor();
         let (w, h) = display.get_framebuffer_dimensions();
         let (cache_width, cache_height) = (w * dpi_factor as u32, h * dpi_factor as u32);
@@ -158,7 +157,7 @@ impl<'a> Fonts<'a> {
         (result, Some(bg))
     }
 
-    pub fn draw_text(&mut self, display: &GlutinFacade, target: &mut Frame, font: &str, size: f32, color: [f32; 4], pos: Vect, text: &str) {
+    pub fn draw_text(&mut self, display: &Display, target: &mut Frame, font: &str, size: f32, color: [f32; 4], pos: Vect, text: &str) {
         fn get_rect(min: Point<u32>, tex: &RawImage2d<u8>) -> glium::Rect {
             glium::Rect {
                 left: min.x,

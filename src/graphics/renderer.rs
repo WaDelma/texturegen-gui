@@ -1,7 +1,7 @@
 use glium::{Frame, VertexBuffer, Blend, Surface};
-use glium::backend::glutin_backend::GlutinFacade;
+use glium::Display;
 use glium::index::{IndexBuffer, PrimitiveType};
-use glium::draw_parameters::{DrawParameters};
+use glium::draw_parameters::DrawParameters;
 use glium::draw_parameters::LinearBlendingFactor::*;
 use glium::draw_parameters::BlendingFunction::*;
 use glium::uniforms::{Uniforms, UniformsStorage, AsUniformValue};
@@ -15,7 +15,7 @@ use super::{RenderContext, Vertex, vert};
 use State::*;
 use math::*;
 
-pub fn render(display: &GlutinFacade, rctx: &mut RenderContext, gen: GeneratorView<Node>, ctx: &SimContext) {
+pub fn render(display: &Display, rctx: &mut RenderContext, gen: GeneratorView<Node>, ctx: &SimContext) {
     let mut target = display.draw();
     target.clear_color(0.0157, 0.0173, 0.0204, 1.);
     let draw_params = DrawParameters {
@@ -115,18 +115,13 @@ pub fn render(display: &GlutinFacade, rctx: &mut RenderContext, gen: GeneratorVi
                 match node.setting(settings[i]) {
                     Setting::Blend(ref b) => {
                         let bb = rctx.fonts.bounding_box("anka", size, &string).unwrap();
-                        let max = from_screen_to_world(rctx.cam, from_window_to_screen(dims, [bb.max.x, bb.max.y]));
                         string.push_str(&format!("{:?}", b));
-                        let pos = pos + Vect::new(max.x - 0.5, -1. / 20.);
-                        let mut i = 0;
-                        for blend in BlendType::iter_variants() {
-                            if blend == **b {
-                                continue;
-                            }
+                        let max = from_window_to_screen(dims, [bb.max.x, bb.max.y]);
+                        let pos = pos + Vect::new(max.x * 1.5, -1. / 20.);
+                        for (i, blend) in BlendType::iter_variants().enumerate() {
                             let blend = format!("{:?}", blend);
                             let pos = pos + Vect::new(0., -(i as f32 / 20.));
                             rctx.fonts.draw_text(&display, &mut target, "anka", size, [0., 0., 0., 1.], pos, &blend);
-                            i += 1;
                         }
                     },
                     _ => {

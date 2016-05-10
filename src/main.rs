@@ -7,6 +7,7 @@ extern crate unicode_normalization;
 extern crate texturegen;
 extern crate webweaver;
 extern crate nalgebra;
+extern crate image;
 
 use std::cell::RefCell;
 
@@ -15,7 +16,7 @@ use glium::glutin::WindowBuilder;
 
 use daggy::NodeIndex;
 
-use texturegen::{Generator, Port, port};
+use texturegen::{Col, Generator, Port, port};
 use texturegen::process::{Process, Stripes, BlendType};
 use texturegen::process::Blend as BlendProcess;
 
@@ -130,8 +131,8 @@ fn main() {
         ctx.mouse_pos = from_screen_to_world(rctx.cam, mouse_pos1 - Vect::new(0.5, 0.5));
         if let Some(Dragging) = ctx.state {
             if let Some(Selection::Node(n)) = ctx.selected {
-                if let Some(data) = gen.get_mut(n) {
-                    data.1.pos = ctx.mouse_pos;
+                if let Some(data) = gen.get_data_mut(n) {
+                    data.pos = ctx.mouse_pos;
                 }
             }
         }
@@ -160,9 +161,9 @@ fn main() {
 }
 
 fn construct_example_texture(gen: &mut Generator<Node>) {
-    let n1 = gen.add(Stripes::new(8, 1, [1., 0.5, 0., 1.], [0.5, 0.0, 0.5, 1.]), Node::new(Vect::new(-2., -2.)));
-    let n2 = gen.add(Stripes::new(1, 4, [0., 0.5, 1., 1.], [0.0, 0.33, 0.0, 1.]), Node::new(Vect::new(0., -2.)));
-    let n3 = gen.add(Stripes::new(16, 16, [0.1, 0.1, 0.2, 1.], [0.8, 0.9, 0.9, 1.]), Node::new(Vect::new(2., -2.)));
+    let n1 = gen.add(Stripes::new(8, 1, Col::new(1., 0.5, 0.), Col::new(0.5, 0.0, 0.5)), Node::new(Vect::new(-2., -2.)));
+    let n2 = gen.add(Stripes::new(1, 4, Col::new(0., 0.5, 1.), Col::new(0.0, 0.33, 0.0)), Node::new(Vect::new(0., -2.)));
+    let n3 = gen.add(Stripes::new(16, 16, Col::new(0.1, 0.1, 0.2), Col::new(0.8, 0.9, 0.9)), Node::new(Vect::new(2., -2.)));
     let n4 = gen.add(BlendProcess::new(BlendType::Add, BlendType::Normal), Node::new(Vect::new(2., 0.)));
     gen.connect(port(n1, 0), port(n4, 0));
     gen.connect(port(n3, 0), port(n4, 1));

@@ -2,8 +2,10 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 
 use glium::{VertexBuffer, Program};
-use glium::backend::glutin_backend::GlutinFacade;
+use glium::Display;
 use glium::index::{IndexBuffer, PrimitiveType};
+
+use nalgebra::Eye;
 
 use self::fonts::Fonts;
 use math::*;
@@ -56,7 +58,7 @@ pub struct RenderContext<'a> {
 }
 
 impl<'a> RenderContext<'a> {
-    pub fn new(display: &'a GlutinFacade) -> RenderContext<'a> {
+    pub fn new(display: &'a Display) -> RenderContext<'a> {
         let mut fonts = Fonts::new(display);
         fonts.load("anka",
             PathBuf::from("assets")
@@ -64,7 +66,7 @@ impl<'a> RenderContext<'a> {
                 .join("anka")
                 .join("bold")
                 .with_extension("ttf"));
-        
+
         let mut models = HashMap::new();
         models.insert("node".into(), {
             let (vertices, indices) = (
@@ -103,7 +105,7 @@ impl<'a> RenderContext<'a> {
 
         RenderContext {
             fonts: fonts,
-            cam: matrix([[0.; 4]; 4]),
+            cam: Mat::new_identity(4),
             models: models,
             programs: programs,
         }
